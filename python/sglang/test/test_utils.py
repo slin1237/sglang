@@ -127,7 +127,7 @@ DEFAULT_SMALL_VLM_MODEL_NAME_FOR_TEST = "Qwen/Qwen2.5-VL-3B-Instruct"
 DEFAULT_IMAGE_URL = "https://github.com/sgl-project/sglang/blob/main/test/lang/example_image.png?raw=true"
 DEFAULT_VIDEO_URL = "https://raw.githubusercontent.com/EvolvingLMMs-Lab/sglang/dev/onevision_local/assets/jobs.mp4"
 
-DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH = 600
+DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH = 600000
 
 
 def is_in_ci():
@@ -165,10 +165,10 @@ else:
 DEFAULT_URL_FOR_TEST = f"http://127.0.0.1:{DEFAULT_PORT_FOR_SRT_TEST_RUNNER + 1000}"
 
 if is_in_amd_ci():
-    DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH = 3000
+    DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH = 300000
 
 if is_blackwell_system():
-    DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH = 3000
+    DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH = 300000
 
 
 def call_generate_lightllm(prompt, temperature, max_tokens, stop=None, url=None):

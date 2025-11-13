@@ -84,7 +84,10 @@ def flashinfer_cutedsl_moe_masked(
     if hidden_states[1] is not None:
 
         a_q = hidden_states[0].view(torch.uint8)
-        a_q_sf = hidden_states[1].view(torch.float8_e4m3fn)
+        if hidden_states[1].dtype != torch.float8_e4m3fn:
+            a_q_sf = hidden_states[1].to(torch.float8_e4m3fn)
+        else:
+            a_q_sf = hidden_states[1]
         m, k_by_2, num_experts = a_q.shape
         k = k_by_2 * 2
     else:
@@ -160,6 +163,7 @@ def flashinfer_cutedsl_moe_masked(
     # Gemm2
     out = torch.empty((num_experts, m, k), dtype=torch.bfloat16, device=a_q.device)
     out = out.permute(1, 2, 0)  # requirement of kernel
+    print(masked_m.shape)
     grouped_gemm_nt_masked(
         (diq, diq_sf),
         (w2.permute(1, 2, 0), w2_blockscale),

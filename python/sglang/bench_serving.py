@@ -38,12 +38,12 @@ from datasets import load_dataset
 from PIL import Image
 from tqdm.asyncio import tqdm
 from transformers import (
-    AutoProcessor,
     AutoTokenizer,
     PreTrainedTokenizer,
     PreTrainedTokenizerBase,
     PreTrainedTokenizerFast,
 )
+from transformers.models.auto.processing_auto import AutoProcessor
 
 ASSISTANT_SUFFIX = "Assistant:"
 

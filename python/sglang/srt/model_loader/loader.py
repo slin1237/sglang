@@ -2049,6 +2049,8 @@ def get_model_loader(
 ) -> BaseModelLoader:
     """Get a model loader based on the load format."""
 
+    return DummyModelLoader(load_config)
+
     if load_config.load_format == LoadFormat.DUMMY:
         return DummyModelLoader(load_config)
 

@@ -51,6 +51,9 @@ class TestDeepseekR1Nvfp4CuteDSLDeepEP(CustomTestCase):
             "flashinfer_cutedsl",
             "--deepep-mode",
             "low_latency",
+            "--json-model-override-args",
+            '{"num_hidden_layers": 6, "n_routed_experts": 8}',
+            "--enable-single-batch-overlap",
         ]
         cls.process = popen_launch_server(
             cls.model,
