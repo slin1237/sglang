@@ -18,7 +18,7 @@ import requests
 PROFILER_DIR = os.getenv("SGLANG_TORCH_PROFILER_DIR", "/tmp")
 
 
-def _run_profile(
+def run_profile(
     url: Optional[str],
     num_steps: int,
     activities: List[str],
@@ -26,6 +26,7 @@ def _run_profile(
     profile_name: Optional[str] = None,
     profile_by_stage: bool = False,
     merge_profiles: bool = False,
+    profile_prefix: str = "",
 ) -> str:
     if output_dir is None:
         output_dir = PROFILER_DIR
@@ -62,6 +63,7 @@ def _run_profile(
         "activities": activities,
         "profile_by_stage": profile_by_stage,
         "merge_profiles": merge_profiles,
+        "profile_prefix": profile_prefix,
     }
 
     response = requests.post(url=url + "/start_profile", json=json_data)
@@ -69,28 +71,6 @@ def _run_profile(
 
     trace_link = str(output_dir)
     return trace_link
-
-
-def run_profile(
-    url: Optional[str],
-    num_steps: int,
-    activities: List[str],
-    output_dir: Optional[str] = None,
-    profile_name: Optional[str] = None,
-    profile_by_stage: bool = False,
-    merge_profiles: bool = False,
-):
-    # step based profile will self terminate on num_steps constraints
-    link = _run_profile(
-        url,
-        num_steps,
-        activities,
-        output_dir,
-        profile_name,
-        profile_by_stage,
-        merge_profiles,
-    )
-    return link
 
 
 if __name__ == "__main__":
@@ -152,7 +132,7 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         type=bool,
         default=False,
-        help="Whether to use rpd profiler (https://github.com/ROCm/rocmProfileData)",
+        help="Whether to use ROCM rpd profiler (https://github.com/ROCm/rocmProfileData)",
     )
     parser.add_argument(
         "--merge-profiles",
@@ -172,12 +152,13 @@ if __name__ == "__main__":
         activities.append("MEM")
     if args.rpd:
         activities.append("RPD")
+
     run_profile(
-        args.url,
-        args.num_steps,
-        activities,
-        args.output_dir,
-        args.profile_name,
-        args.profile_by_stage,
-        args.merge_profiles,
+        url=args.url,
+        num_steps=args.num_steps,
+        activities=activities,
+        output_dir=args.output_dir,
+        profile_name=args.profile_name,
+        profile_by_stage=args.profile_by_stage,
+        merge_profiles=args.merge_profiles,
     )
