@@ -1571,6 +1571,8 @@ def launch_metrics_server(host: str, port: int):
     from fastapi import FastAPI
     from prometheus_client import CollectorRegistry, make_asgi_app, multiprocess
 
+    set_prometheus_multiproc_dir()
+
     metrics_app = FastAPI()
 
     # Create prometheus metrics endpoint
