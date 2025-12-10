@@ -27,6 +27,17 @@ use rand::{
 // Import the tree module
 use sgl_model_gateway::policies::tree::Tree;
 
+// Global results storage for summary
+lazy_static::lazy_static! {
+    static ref BENCHMARK_RESULTS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+}
+
+fn add_result(category: &str, result: String) {
+    let mut results = BENCHMARK_RESULTS.lock().unwrap();
+    let index = results.len();
+    results.insert(format!("{:03}_{}", index, category), result);
+}
+
 /// Simulated HTTP/gRPC endpoints representing worker nodes
 /// These mirror real-world deployment patterns with 10 tenants
 const ENDPOINT_TENANTS: [&str; 10] = [
