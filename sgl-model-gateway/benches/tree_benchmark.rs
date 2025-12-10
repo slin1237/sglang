@@ -175,10 +175,7 @@ fn bench_insert_throughput(c: &mut Criterion) {
                 let ops_per_sec = iters as f64 / duration.as_secs_f64();
                 let result = format!(
                     "{:<25} | {:>8} | {:>12.0} | {:>10}",
-                    "shared_prefix",
-                    "~58",
-                    ops_per_sec,
-                    10
+                    "shared_prefix", "~58", ops_per_sec, 10
                 );
                 add_result("insert", result);
                 printed.store(true, Ordering::Relaxed);
@@ -209,10 +206,7 @@ fn bench_insert_throughput(c: &mut Criterion) {
                 let ops_per_sec = iters as f64 / duration.as_secs_f64();
                 let result = format!(
                     "{:<25} | {:>8} | {:>12.0} | {:>10}",
-                    "realistic_llm",
-                    "~100",
-                    ops_per_sec,
-                    10
+                    "realistic_llm", "~100", ops_per_sec, 10
                 );
                 add_result("insert", result);
                 printed.store(true, Ordering::Relaxed);
@@ -267,9 +261,7 @@ fn bench_prefix_match_latency(c: &mut Criterion) {
                 let latency_ns = duration.as_nanos() as f64 / iters as f64;
                 let result = format!(
                     "{:<20} | {:>12.0} | {:>12.1}",
-                    "cache_hit",
-                    ops_per_sec,
-                    latency_ns
+                    "cache_hit", ops_per_sec, latency_ns
                 );
                 add_result("prefix_match", result);
                 printed.store(true, Ordering::Relaxed);
@@ -303,9 +295,7 @@ fn bench_prefix_match_latency(c: &mut Criterion) {
                 let latency_ns = duration.as_nanos() as f64 / iters as f64;
                 let result = format!(
                     "{:<20} | {:>12.0} | {:>12.1}",
-                    "cache_miss",
-                    ops_per_sec,
-                    latency_ns
+                    "cache_miss", ops_per_sec, latency_ns
                 );
                 add_result("prefix_match", result);
                 printed.store(true, Ordering::Relaxed);
@@ -342,9 +332,7 @@ fn bench_prefix_match_latency(c: &mut Criterion) {
                 let latency_ns = duration.as_nanos() as f64 / iters as f64;
                 let result = format!(
                     "{:<20} | {:>12.0} | {:>12.1}",
-                    "partial_match",
-                    ops_per_sec,
-                    latency_ns
+                    "partial_match", ops_per_sec, latency_ns
                 );
                 add_result("prefix_match", result);
                 printed.store(true, Ordering::Relaxed);
@@ -617,9 +605,7 @@ fn bench_utf8_vs_ascii(c: &mut Criterion) {
                 let ops_per_sec = iters as f64 / duration.as_secs_f64();
                 let result = format!(
                     "{:<20} | {:>12.0} | {:>12}",
-                    "ASCII",
-                    ops_per_sec,
-                    "baseline"
+                    "ASCII", ops_per_sec, "baseline"
                 );
                 add_result("encoding", result);
                 printed.store(true, Ordering::Relaxed);
@@ -702,9 +688,7 @@ fn bench_multi_tenant(c: &mut Criterion) {
                 let ops_per_sec = iters as f64 / duration.as_secs_f64();
                 let result = format!(
                     "{:<30} | {:>10} | {:>12.0}",
-                    "shared_prefix_lookup",
-                    10,
-                    ops_per_sec
+                    "shared_prefix_lookup", 10, ops_per_sec
                 );
                 add_result("multi_tenant", result);
                 printed.store(true, Ordering::Relaxed);
@@ -739,9 +723,7 @@ fn bench_multi_tenant(c: &mut Criterion) {
                 let ops_per_sec = iters as f64 / duration.as_secs_f64();
                 let result = format!(
                     "{:<30} | {:>10} | {:>12.0}",
-                    "tenant_specific_match",
-                    10,
-                    ops_per_sec
+                    "tenant_specific_match", 10, ops_per_sec
                 );
                 add_result("multi_tenant", result);
                 printed.store(true, Ordering::Relaxed);
@@ -779,10 +761,7 @@ fn bench_multi_tenant(c: &mut Criterion) {
                 let latency_ms = total_duration.as_millis() as f64 / iters as f64;
                 let result = format!(
                     "{:<30} | {:>10} | {:>12.0} | {:>10.2}ms",
-                    "tenant_removal",
-                    10,
-                    ops_per_sec,
-                    latency_ms
+                    "tenant_removal", 10, ops_per_sec, latency_ms
                 );
                 add_result("multi_tenant", result);
                 printed.store(true, Ordering::Relaxed);
@@ -820,9 +799,7 @@ fn bench_summary(c: &mut Criterion) {
                 let ops_per_sec = iters as f64 / duration.as_secs_f64();
                 let result = format!(
                     "{:<25} | {:>12.0} | {:>12}",
-                    "insert_realistic",
-                    ops_per_sec,
-                    "PASS"
+                    "insert_realistic", ops_per_sec, "PASS"
                 );
                 add_result("summary", result);
                 printed.store(true, Ordering::Relaxed);
@@ -862,9 +839,7 @@ fn bench_summary(c: &mut Criterion) {
                 let ops_per_sec = iters as f64 / duration.as_secs_f64();
                 let result = format!(
                     "{:<25} | {:>12.0} | {:>12}",
-                    "prefix_match_realistic",
-                    ops_per_sec,
-                    "PASS"
+                    "prefix_match_realistic", ops_per_sec, "PASS"
                 );
                 add_result("summary", result);
                 printed.store(true, Ordering::Relaxed);
@@ -917,9 +892,7 @@ fn bench_summary(c: &mut Criterion) {
                 let ops_per_sec = total_ops as f64 / duration.as_secs_f64();
                 let result = format!(
                     "{:<25} | {:>12.0} | {:>12}",
-                    "concurrent_8_threads",
-                    ops_per_sec,
-                    "PASS"
+                    "concurrent_8_threads", ops_per_sec, "PASS"
                 );
                 add_result("summary", result);
                 printed.store(true, Ordering::Relaxed);
@@ -994,10 +967,7 @@ fn print_summary() {
                 }
                 "summary" => {
                     println!("CI SUMMARY (representative benchmarks)");
-                    println!(
-                        "{:<25} | {:>12} | {:>12}",
-                        "Benchmark", "Ops/sec", "Status"
-                    );
+                    println!("{:<25} | {:>12} | {:>12}", "Benchmark", "Ops/sec", "Status");
                 }
                 _ => {}
             }
