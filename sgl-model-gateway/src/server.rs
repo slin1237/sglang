@@ -15,7 +15,8 @@ use axum::{
     routing::{delete, get, post},
     serve, Json, Router,
 };
-use axum_server::tls_rustls::RustlsConfig;
+use axum_server::{tls_rustls::RustlsConfig, Handle};
+use rustls::crypto::CryptoProvider;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::{net::TcpListener, signal, spawn};
@@ -945,6 +946,10 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
                 bind_addr, cert_path, key_path
             );
 
+            // Install the default crypto provider for rustls
+            // This is needed because rustls doesn't have a default provider
+            let _ = CryptoProvider::install_default(rustls::crypto::ring::default_provider());
+
             let rustls_config = RustlsConfig::from_pem_file(cert_path, key_path)
                 .await
                 .map_err(|e| format!("Failed to load TLS certificates: {}", e))?;
@@ -953,9 +958,19 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
                 .parse()
                 .map_err(|e| format!("Invalid bind address '{}': {}", bind_addr, e))?;
 
+            // Create handle for graceful shutdown
+            let handle = Handle::new();
+            let shutdown_handle = handle.clone();
+
+            // Spawn shutdown signal handler
+            spawn(async move {
+                shutdown_signal().await;
+                shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+            });
+
             axum_server::bind_rustls(addr, rustls_config)
+                .handle(handle)
                 .serve(app.into_make_service())
-                .with_graceful_shutdown(shutdown_signal())
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 

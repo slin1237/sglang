@@ -346,7 +346,7 @@ impl Router {
             None
         };
 
-        config::RouterConfig::builder()
+        let builder = config::RouterConfig::builder()
             .mode(mode)
             .policy(policy)
             .host(&self.host)

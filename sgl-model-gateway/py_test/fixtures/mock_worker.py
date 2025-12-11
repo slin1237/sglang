@@ -238,24 +238,37 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         headers = {"X-Worker-Id": worker_id}
         return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
+    async def should_stream(request: Request) -> bool:
+        """Check if request should be streamed based on CLI flag or request body."""
+        if args.stream:
+            return True
+        try:
+            body = await request.body()
+            if body:
+                data = json.loads(body)
+                return data.get("stream", False)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return False
+
     @app.post("/generate")
     async def generate(request: Request):
         async with track_inflight():
-            if args.stream:
+            if await should_stream(request):
                 return await handle_stream_request(request)
             return await handle_text_request(request)
 
     @app.post("/v1/completions")
     async def completions(request: Request):
         async with track_inflight():
-            if args.stream:
+            if await should_stream(request):
                 return await handle_stream_request(request)
             return await handle_text_request(request)
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
         async with track_inflight():
-            if args.stream:
+            if await should_stream(request):
                 return await handle_stream_request(request)
             return await handle_text_request(request)
 
