@@ -228,6 +228,11 @@ struct Router {
     ca_cert_paths: Vec<String>,
     enable_trace: bool,
     otlp_traces_endpoint: String,
+    // Server TLS configuration for HTTPS/HTTP2
+    server_tls_cert_path: Option<String>,
+    server_tls_key_path: Option<String>,
+    server_tls_client_ca_cert_path: Option<String>,
+    server_tls_require_client_cert: bool,
 }
 
 impl Router {
@@ -407,7 +412,24 @@ impl Router {
                 self.client_key_path.as_ref(),
             )
             .add_ca_certificates(self.ca_cert_paths.clone())
-            .build()
+            .maybe_server_tls_cert_and_key(
+                self.server_tls_cert_path.as_ref(),
+                self.server_tls_key_path.as_ref(),
+            );
+
+        // Add optional server TLS mTLS settings
+        let builder = if let Some(ca_path) = &self.server_tls_client_ca_cert_path {
+            builder.server_tls_client_ca(ca_path)
+        } else {
+            builder
+        };
+        let builder = if self.server_tls_require_client_cert {
+            builder.server_tls_require_client_cert(true)
+        } else {
+            builder
+        };
+
+        builder.build()
     }
 }
 
@@ -490,6 +512,10 @@ impl Router {
         ca_cert_paths = vec![],
         enable_trace = false,
         otlp_traces_endpoint = String::from("localhost:4317"),
+        server_tls_cert_path = None,
+        server_tls_key_path = None,
+        server_tls_client_ca_cert_path = None,
+        server_tls_require_client_cert = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -568,6 +594,10 @@ impl Router {
         ca_cert_paths: Vec<String>,
         enable_trace: bool,
         otlp_traces_endpoint: String,
+        server_tls_cert_path: Option<String>,
+        server_tls_key_path: Option<String>,
+        server_tls_client_ca_cert_path: Option<String>,
+        server_tls_require_client_cert: bool,
     ) -> PyResult<Self> {
         let mut all_urls = worker_urls.clone();
 
@@ -660,6 +690,10 @@ impl Router {
             ca_cert_paths,
             enable_trace,
             otlp_traces_endpoint,
+            server_tls_cert_path,
+            server_tls_key_path,
+            server_tls_client_ca_cert_path,
+            server_tls_require_client_cert,
         })
     }
 

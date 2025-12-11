@@ -5,14 +5,14 @@ use sgl_model_gateway::{
     config::{
         CircuitBreakerConfig, ConfigError, ConfigResult, DiscoveryConfig, HealthCheckConfig,
         HistoryBackend, MetricsConfig, OracleConfig, PolicyConfig, PostgresConfig, RetryConfig,
-        RouterConfig, RoutingMode, TokenizerCacheConfig, TraceConfig,
+        RouterConfig, RoutingMode, ServerTlsConfig, TokenizerCacheConfig, TraceConfig,
     },
     core::ConnectionMode,
     observability::{
         metrics::PrometheusConfig,
         otel_trace::{is_otel_enabled, shutdown_otel},
     },
-    server::{self, ServerConfig, TlsConfig},
+    server::{self, ServerConfig},
     service_discovery::ServiceDiscoveryConfig,
     version,
 };
@@ -675,7 +675,23 @@ impl CliArgs {
             .retries(!self.disable_retries)
             .circuit_breaker(!self.disable_circuit_breaker)
             .enable_wasm(self.enable_wasm)
-            .igw(self.enable_igw);
+            .igw(self.enable_igw)
+            .maybe_server_tls_cert_and_key(
+                self.tls_cert_path.as_ref(),
+                self.tls_key_path.as_ref(),
+            );
+
+        // Add optional server TLS mTLS settings
+        let builder = if let Some(ca_path) = &self.tls_client_ca_cert_path {
+            builder.server_tls_client_ca(ca_path)
+        } else {
+            builder
+        };
+        let builder = if self.tls_require_client_cert {
+            builder.server_tls_require_client_cert(true)
+        } else {
+            builder
+        };
 
         builder.build()
     }
@@ -707,18 +723,6 @@ impl CliArgs {
             },
         });
 
-        // Build TLS config if certificate and key paths are provided
-        let tls_config = if self.tls_cert_path.is_some() || self.tls_key_path.is_some() {
-            Some(TlsConfig {
-                cert_path: self.tls_cert_path.clone(),
-                key_path: self.tls_key_path.clone(),
-                client_ca_cert_path: self.tls_client_ca_cert_path.clone(),
-                require_client_cert: self.tls_require_client_cert,
-            })
-        } else {
-            None
-        };
-
         ServerConfig {
             host: self.host.clone(),
             port: self.port,
@@ -734,7 +738,6 @@ impl CliArgs {
             } else {
                 Some(self.request_id_headers.clone())
             },
-            tls_config,
         }
     }
 }

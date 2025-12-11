@@ -596,6 +596,54 @@ impl RouterConfigBuilder {
         self
     }
 
+    // ==================== Server TLS ====================
+
+    /// Set server TLS configuration for HTTPS/HTTP2 support
+    pub fn server_tls(mut self, config: super::ServerTlsConfig) -> Self {
+        self.config.server_tls = Some(config);
+        self
+    }
+
+    /// Set server TLS certificate and key paths
+    pub fn server_tls_cert_and_key<S1: Into<String>, S2: Into<String>>(
+        mut self,
+        cert_path: S1,
+        key_path: S2,
+    ) -> Self {
+        let tls = self.config.server_tls.get_or_insert_with(Default::default);
+        tls.cert_path = Some(cert_path.into());
+        tls.key_path = Some(key_path.into());
+        self
+    }
+
+    /// Set optional server TLS certificate and key paths
+    pub fn maybe_server_tls_cert_and_key(
+        mut self,
+        cert_path: Option<impl Into<String>>,
+        key_path: Option<impl Into<String>>,
+    ) -> Self {
+        if cert_path.is_some() || key_path.is_some() {
+            let tls = self.config.server_tls.get_or_insert_with(Default::default);
+            tls.cert_path = cert_path.map(|p| p.into());
+            tls.key_path = key_path.map(|p| p.into());
+        }
+        self
+    }
+
+    /// Set server TLS client CA certificate path for mTLS
+    pub fn server_tls_client_ca<S: Into<String>>(mut self, ca_cert_path: S) -> Self {
+        let tls = self.config.server_tls.get_or_insert_with(Default::default);
+        tls.client_ca_cert_path = Some(ca_cert_path.into());
+        self
+    }
+
+    /// Set whether to require client certificates (mTLS)
+    pub fn server_tls_require_client_cert(mut self, require: bool) -> Self {
+        let tls = self.config.server_tls.get_or_insert_with(Default::default);
+        tls.require_client_cert = require;
+        self
+    }
+
     // ==================== Build ====================
 
     pub fn build(self) -> ConfigResult<RouterConfig> {

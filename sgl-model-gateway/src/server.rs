@@ -591,25 +591,8 @@ async fn delete_worker(State(state): State<Arc<AppState>>, Path(url): Path<Strin
     }
 }
 
-/// TLS configuration for the server
-#[derive(Clone, Debug, Default)]
-pub struct TlsConfig {
-    /// Path to the TLS certificate file (PEM format)
-    pub cert_path: Option<String>,
-    /// Path to the TLS private key file (PEM format)
-    pub key_path: Option<String>,
-    /// Optional path to CA certificate for client authentication (mTLS)
-    pub client_ca_cert_path: Option<String>,
-    /// Whether to require client certificates (mTLS)
-    pub require_client_cert: bool,
-}
-
-impl TlsConfig {
-    /// Check if TLS is enabled (both cert and key are provided)
-    pub fn is_enabled(&self) -> bool {
-        self.cert_path.is_some() && self.key_path.is_some()
-    }
-}
+/// Re-export ServerTlsConfig from config for convenience
+pub use crate::config::ServerTlsConfig;
 
 pub struct ServerConfig {
     pub host: String,
@@ -622,8 +605,6 @@ pub struct ServerConfig {
     pub prometheus_config: Option<PrometheusConfig>,
     pub request_timeout_secs: u64,
     pub request_id_headers: Option<Vec<String>>,
-    /// TLS configuration for HTTPS/HTTP2 support
-    pub tls_config: Option<TlsConfig>,
 }
 
 pub fn build_app(
@@ -953,8 +934,8 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
 
     let bind_addr = format!("{}:{}", config.host, config.port);
 
-    // Check if TLS is enabled
-    if let Some(tls_config) = &config.tls_config {
+    // Check if TLS is enabled (from router_config.server_tls)
+    if let Some(tls_config) = &config.router_config.server_tls {
         if tls_config.is_enabled() {
             let cert_path = tls_config.cert_path.as_ref().unwrap();
             let key_path = tls_config.key_path.as_ref().unwrap();

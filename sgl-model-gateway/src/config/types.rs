@@ -76,6 +76,30 @@ pub struct RouterConfig {
     /// Enable WASM support
     #[serde(default)]
     pub enable_wasm: bool,
+    /// Server TLS configuration for HTTPS/HTTP2 support
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tls: Option<ServerTlsConfig>,
+}
+
+/// Server-side TLS configuration for HTTPS/HTTP2 support
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ServerTlsConfig {
+    /// Path to the TLS certificate file (PEM format)
+    pub cert_path: Option<String>,
+    /// Path to the TLS private key file (PEM format)
+    pub key_path: Option<String>,
+    /// Optional path to CA certificate for client authentication (mTLS)
+    pub client_ca_cert_path: Option<String>,
+    /// Whether to require client certificates (mTLS)
+    #[serde(default)]
+    pub require_client_cert: bool,
+}
+
+impl ServerTlsConfig {
+    /// Check if TLS is enabled (both cert and key are provided)
+    pub fn is_enabled(&self) -> bool {
+        self.cert_path.is_some() && self.key_path.is_some()
+    }
 }
 
 /// Tokenizer cache configuration
@@ -523,6 +547,7 @@ impl Default for RouterConfig {
             ca_certificates: vec![],
             mcp_config: None,
             enable_wasm: false,
+            server_tls: None,
         }
     }
 }

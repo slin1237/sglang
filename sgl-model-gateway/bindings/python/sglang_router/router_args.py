@@ -121,6 +121,11 @@ class RouterArgs:
     # Trace
     enable_trace: bool = False
     otlp_traces_endpoint: str = "localhost:4317"
+    # Server TLS configuration for HTTPS/HTTP2 support
+    server_tls_cert_path: Optional[str] = None
+    server_tls_key_path: Optional[str] = None
+    server_tls_client_ca_cert_path: Optional[str] = None
+    server_tls_require_client_cert: bool = False
 
     @staticmethod
     def add_cli_args(
@@ -654,6 +659,31 @@ class RouterArgs:
             type=str,
             default="localhost:4317",
             help="Config opentelemetry collector endpoint if --enable-trace is set. format: <ip>:<port>",
+        )
+
+        # Server TLS configuration for HTTPS/HTTP2
+        parser.add_argument(
+            f"--{prefix}server-tls-cert-path",
+            type=str,
+            default=None,
+            help="Path to TLS certificate file (PEM format) for HTTPS/HTTP2 server support",
+        )
+        parser.add_argument(
+            f"--{prefix}server-tls-key-path",
+            type=str,
+            default=None,
+            help="Path to TLS private key file (PEM format) for HTTPS/HTTP2 server support",
+        )
+        parser.add_argument(
+            f"--{prefix}server-tls-client-ca-cert-path",
+            type=str,
+            default=None,
+            help="Path to CA certificate for client authentication (mTLS) on the server",
+        )
+        parser.add_argument(
+            f"--{prefix}server-tls-require-client-cert",
+            action="store_true",
+            help="Require client certificates for server mTLS authentication",
         )
 
     @classmethod
