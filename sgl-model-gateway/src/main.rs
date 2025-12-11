@@ -12,7 +12,7 @@ use sgl_model_gateway::{
         metrics::PrometheusConfig,
         otel_trace::{is_otel_enabled, shutdown_otel},
     },
-    server::{self, ServerConfig},
+    server::{self, ServerConfig, TlsConfig},
     service_discovery::ServiceDiscoveryConfig,
     version,
 };
@@ -360,6 +360,22 @@ struct CliArgs {
 
     #[arg(long, default_value = "localhost:4317")]
     otlp_traces_endpoint: String,
+
+    /// Path to TLS certificate file (PEM format) for HTTPS/HTTP2 support
+    #[arg(long, env = "TLS_CERT_PATH")]
+    tls_cert_path: Option<String>,
+
+    /// Path to TLS private key file (PEM format) for HTTPS/HTTP2 support
+    #[arg(long, env = "TLS_KEY_PATH")]
+    tls_key_path: Option<String>,
+
+    /// Path to CA certificate for client authentication (mTLS)
+    #[arg(long, env = "TLS_CLIENT_CA_CERT_PATH")]
+    tls_client_ca_cert_path: Option<String>,
+
+    /// Require client certificates (enables mTLS)
+    #[arg(long, default_value_t = false)]
+    tls_require_client_cert: bool,
 }
 
 enum OracleConnectSource {
@@ -691,6 +707,18 @@ impl CliArgs {
             },
         });
 
+        // Build TLS config if certificate and key paths are provided
+        let tls_config = if self.tls_cert_path.is_some() || self.tls_key_path.is_some() {
+            Some(TlsConfig {
+                cert_path: self.tls_cert_path.clone(),
+                key_path: self.tls_key_path.clone(),
+                client_ca_cert_path: self.tls_client_ca_cert_path.clone(),
+                require_client_cert: self.tls_require_client_cert,
+            })
+        } else {
+            None
+        };
+
         ServerConfig {
             host: self.host.clone(),
             port: self.port,
@@ -706,6 +734,7 @@ impl CliArgs {
             } else {
                 Some(self.request_id_headers.clone())
             },
+            tls_config,
         }
     }
 }

@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -14,6 +15,7 @@ use axum::{
     routing::{delete, get, post},
     serve, Json, Router,
 };
+use axum_server::tls_rustls::RustlsConfig;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::{net::TcpListener, signal, spawn};
@@ -589,6 +591,26 @@ async fn delete_worker(State(state): State<Arc<AppState>>, Path(url): Path<Strin
     }
 }
 
+/// TLS configuration for the server
+#[derive(Clone, Debug, Default)]
+pub struct TlsConfig {
+    /// Path to the TLS certificate file (PEM format)
+    pub cert_path: Option<String>,
+    /// Path to the TLS private key file (PEM format)
+    pub key_path: Option<String>,
+    /// Optional path to CA certificate for client authentication (mTLS)
+    pub client_ca_cert_path: Option<String>,
+    /// Whether to require client certificates (mTLS)
+    pub require_client_cert: bool,
+}
+
+impl TlsConfig {
+    /// Check if TLS is enabled (both cert and key are provided)
+    pub fn is_enabled(&self) -> bool {
+        self.cert_path.is_some() && self.key_path.is_some()
+    }
+}
+
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
@@ -600,6 +622,8 @@ pub struct ServerConfig {
     pub prometheus_config: Option<PrometheusConfig>,
     pub request_timeout_secs: u64,
     pub request_id_headers: Option<Vec<String>>,
+    /// TLS configuration for HTTPS/HTTP2 support
+    pub tls_config: Option<TlsConfig>,
 }
 
 pub fn build_app(
@@ -927,9 +951,39 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
         config.router_config.cors_allowed_origins.clone(),
     );
 
-    // TcpListener::bind accepts &str and handles IPv4/IPv6 via ToSocketAddrs
     let bind_addr = format!("{}:{}", config.host, config.port);
-    info!("Starting server on {}", bind_addr);
+
+    // Check if TLS is enabled
+    if let Some(tls_config) = &config.tls_config {
+        if tls_config.is_enabled() {
+            let cert_path = tls_config.cert_path.as_ref().unwrap();
+            let key_path = tls_config.key_path.as_ref().unwrap();
+
+            info!(
+                "Starting HTTPS/HTTP2 server on {} with TLS (cert: {}, key: {})",
+                bind_addr, cert_path, key_path
+            );
+
+            let rustls_config = RustlsConfig::from_pem_file(cert_path, key_path)
+                .await
+                .map_err(|e| format!("Failed to load TLS certificates: {}", e))?;
+
+            let addr: SocketAddr = bind_addr
+                .parse()
+                .map_err(|e| format!("Invalid bind address '{}': {}", bind_addr, e))?;
+
+            axum_server::bind_rustls(addr, rustls_config)
+                .serve(app.into_make_service())
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
+            return Ok(());
+        }
+    }
+
+    // Plain HTTP/1.1 server (no TLS)
+    info!("Starting HTTP server on {}", bind_addr);
     let listener = TcpListener::bind(&bind_addr)
         .await
         .map_err(|e| format!("Failed to bind to {}: {}", bind_addr, e))?;
