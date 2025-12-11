@@ -105,6 +105,11 @@ class RouterManager:
                 "client_cert_path": "--client-cert-path",
                 "client_key_path": "--client-key-path",
                 "ca_cert_paths": "--ca-cert-paths",
+                # Server TLS configuration
+                "server_tls_cert_path": "--server-tls-cert-path",
+                "server_tls_key_path": "--server-tls-key-path",
+                "server_tls_client_ca_cert_path": "--server-tls-client-ca-cert-path",
+                "server_tls_require_client_cert": "--server-tls-require-client-cert",
             }
             for k, v in extra.items():
                 if v is None:
@@ -125,8 +130,19 @@ class RouterManager:
 
         proc = subprocess.Popen(cmd)
         self._children.append(proc)
-        url = f"http://127.0.0.1:{port}"
-        self._wait_health(url)
+
+        # Determine if server TLS is enabled
+        server_tls_enabled = extra and extra.get("server_tls_cert_path") and extra.get("server_tls_key_path")
+        if server_tls_enabled:
+            url = f"https://127.0.0.1:{port}"
+            # Get CA cert for verifying server, and optionally client certs for mTLS
+            ca_cert = extra.get("server_tls_ca_cert_for_client")  # CA to verify server cert
+            client_cert = extra.get("server_tls_client_cert_for_test")  # Client cert for mTLS
+            client_key = extra.get("server_tls_client_key_for_test")  # Client key for mTLS
+            self._wait_health_tls(url, ca_cert, client_cert, client_key)
+        else:
+            url = f"http://127.0.0.1:{port}"
+            self._wait_health(url)
         return ProcHandle(process=proc, url=url)
 
     def _wait_health(self, base_url: str, timeout: float = 30.0):
@@ -141,6 +157,46 @@ class RouterManager:
                     pass
                 time.sleep(0.2)
         raise TimeoutError(f"Router at {base_url} did not become healthy")
+
+    def _wait_health_tls(
+        self,
+        base_url: str,
+        ca_cert: Optional[str] = None,
+        client_cert: Optional[str] = None,
+        client_key: Optional[str] = None,
+        timeout: float = 30.0,
+    ):
+        """Wait for TLS-enabled router to become healthy.
+
+        Args:
+            base_url: HTTPS URL of the router
+            ca_cert: Path to CA certificate for verifying server cert
+            client_cert: Path to client certificate for mTLS
+            client_key: Path to client private key for mTLS
+            timeout: Maximum time to wait in seconds
+        """
+        start = time.time()
+        last_error = None
+        with requests.Session() as s:
+            while time.time() - start < timeout:
+                try:
+                    # Verify server cert with CA if provided, otherwise skip verification
+                    verify = ca_cert if ca_cert else False
+
+                    # Provide client cert for mTLS if specified
+                    cert = None
+                    if client_cert and client_key:
+                        cert = (client_cert, client_key)
+
+                    r = s.get(f"{base_url}/health", timeout=2, verify=verify, cert=cert)
+                    if r.status_code == 200:
+                        return
+                except requests.RequestException as e:
+                    last_error = e
+                time.sleep(0.2)
+        raise TimeoutError(
+            f"TLS router at {base_url} did not become healthy. Last error: {last_error}"
+        )
 
     def add_worker(self, base_url: str, worker_url: str, timeout: float = 30.0) -> None:
         r = requests.post(f"{base_url}/workers", json={"url": worker_url})
