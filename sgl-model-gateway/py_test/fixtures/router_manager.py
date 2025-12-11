@@ -143,6 +143,11 @@ class RouterManager:
         else:
             url = f"http://127.0.0.1:{port}"
             self._wait_health(url)
+
+        # Wait for initial workers to be registered (async registration)
+        if worker_urls:
+            self._wait_workers_registered(url, len(worker_urls))
+
         return ProcHandle(process=proc, url=url)
 
     def _wait_health(self, base_url: str, timeout: float = 30.0):
@@ -196,6 +201,37 @@ class RouterManager:
                 time.sleep(0.2)
         raise TimeoutError(
             f"TLS router at {base_url} did not become healthy. Last error: {last_error}"
+        )
+
+    def _wait_workers_registered(
+        self, base_url: str, expected_count: int, timeout: float = 30.0
+    ):
+        """Wait for workers to be registered and healthy.
+
+        Args:
+            base_url: URL of the router
+            expected_count: Number of workers expected to be registered
+            timeout: Maximum time to wait in seconds
+        """
+        start = time.time()
+        with requests.Session() as s:
+            while time.time() - start < timeout:
+                try:
+                    r = s.get(f"{base_url}/workers", timeout=2)
+                    if r.status_code == 200:
+                        data = r.json()
+                        workers = data.get("workers", [])
+                        # Count healthy workers
+                        healthy_count = sum(
+                            1 for w in workers if w.get("is_healthy", False)
+                        )
+                        if healthy_count >= expected_count:
+                            return
+                except requests.RequestException:
+                    pass
+                time.sleep(0.2)
+        raise TimeoutError(
+            f"Expected {expected_count} healthy workers but did not reach that after {timeout}s"
         )
 
     def add_worker(self, base_url: str, worker_url: str, timeout: float = 30.0) -> None:
