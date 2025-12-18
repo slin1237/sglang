@@ -38,7 +38,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 use tracing::{debug, error, info};
 
-use super::tree_optimized::OptimizedTree;
+use super::tree::Tree;
 
 // Include generated protobuf code
 pub mod proto {
@@ -58,7 +58,7 @@ use proto::{
 #[derive(Debug)]
 pub struct RadixTreeGrpcServer {
     /// Per-model trees
-    trees: Arc<DashMap<String, Arc<OptimizedTree>>>,
+    trees: Arc<DashMap<String, Arc<Tree>>>,
     /// Server start time for uptime tracking
     start_time: Instant,
     /// Total requests processed
@@ -82,7 +82,7 @@ impl RadixTreeGrpcServer {
     }
 
     /// Get or create a tree for the given model.
-    fn get_or_create_tree(&self, model_id: &str) -> Arc<OptimizedTree> {
+    fn get_or_create_tree(&self, model_id: &str) -> Arc<Tree> {
         let model_key = if model_id.is_empty() || model_id == "unknown" {
             "default".to_string()
         } else {
@@ -91,7 +91,7 @@ impl RadixTreeGrpcServer {
 
         self.trees
             .entry(model_key)
-            .or_insert_with(|| Arc::new(OptimizedTree::new()))
+            .or_insert_with(|| Arc::new(Tree::new()))
             .clone()
     }
 

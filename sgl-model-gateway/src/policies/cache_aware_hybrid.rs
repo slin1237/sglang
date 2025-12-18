@@ -42,7 +42,7 @@ use tokio::runtime::Handle;
 use tracing::{debug, error, warn};
 
 use super::{
-    get_healthy_worker_indices, tree_optimized::OptimizedTree, CacheAwareConfig,
+    get_healthy_worker_indices, tree::Tree, CacheAwareConfig,
     LoadBalancingPolicy,
 };
 use crate::core::Worker;
@@ -83,13 +83,13 @@ impl Default for CacheAwareHybridConfig {
 /// Tree backend abstraction for local or remote operations.
 enum TreeBackend {
     /// Local optimized tree
-    Local(Arc<OptimizedTree>),
+    Local(Arc<Tree>),
     /// Remote gRPC client (with local fallback)
     #[cfg(feature = "grpc-server")]
     Remote {
         client: tokio::sync::RwLock<Option<RadixTreeGrpcClient>>,
         address: String,
-        fallback: Option<Arc<OptimizedTree>>,
+        fallback: Option<Arc<Tree>>,
     },
 }
 
@@ -196,7 +196,7 @@ impl CacheAwareHybridPolicy {
                         client: tokio::sync::RwLock::new(None),
                         address: self.config.grpc_address.clone(),
                         fallback: if self.config.fallback_to_local {
-                            Some(Arc::new(OptimizedTree::new()))
+                            Some(Arc::new(Tree::new()))
                         } else {
                             None
                         },
@@ -205,10 +205,10 @@ impl CacheAwareHybridPolicy {
                 #[cfg(not(feature = "grpc-server"))]
                 {
                     warn!("gRPC mode requested but grpc-server feature not enabled, using local");
-                    TreeBackend::Local(Arc::new(OptimizedTree::new()))
+                    TreeBackend::Local(Arc::new(Tree::new()))
                 }
             } else {
-                TreeBackend::Local(Arc::new(OptimizedTree::new()))
+                TreeBackend::Local(Arc::new(Tree::new()))
             };
             self.backends.insert(model_key.clone(), backend);
         }

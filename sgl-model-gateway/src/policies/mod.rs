@@ -16,7 +16,6 @@ mod random;
 mod registry;
 mod round_robin;
 pub mod tree;
-pub mod tree_optimized;
 
 #[cfg(feature = "grpc-server")]
 pub mod radix_tree_grpc;
@@ -29,7 +28,7 @@ pub use power_of_two::PowerOfTwoPolicy;
 pub use random::RandomPolicy;
 pub use registry::PolicyRegistry;
 pub use round_robin::RoundRobinPolicy;
-pub use tree_optimized::OptimizedTree;
+pub use tree::Tree;
 
 #[cfg(feature = "grpc-server")]
 pub use radix_tree_grpc::{RadixTreeGrpcClient, RadixTreeGrpcConfig, RadixTreeGrpcServer};
