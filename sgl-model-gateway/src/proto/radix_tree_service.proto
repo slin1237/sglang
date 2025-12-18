@@ -1,0 +1,222 @@
+syntax = "proto3";
+
+package sglang.grpc.radixtree;
+
+// RadixTreeService provides a standalone, stateful cache-aware routing service.
+// This service can run as a separate process, enabling:
+// - Horizontal scaling of the radix tree computation
+// - Shared state across multiple gateway instances
+// - Persistent cache state across gateway restarts
+// - Reduced CPU load on the gateway for high-throughput scenarios
+service RadixTreeService {
+  // Insert a text entry for a tenant (worker)
+  rpc Insert(InsertRequest) returns (InsertResponse);
+
+  // Batch insert multiple entries
+  rpc BatchInsert(BatchInsertRequest) returns (BatchInsertResponse);
+
+  // Find the best prefix match for a given text
+  rpc PrefixMatch(PrefixMatchRequest) returns (PrefixMatchResponse);
+
+  // Batch prefix match for high throughput
+  rpc BatchPrefixMatch(BatchPrefixMatchRequest) returns (BatchPrefixMatchResponse);
+
+  // Match prefix for a specific tenant
+  rpc PrefixMatchTenant(PrefixMatchTenantRequest) returns (PrefixMatchTenantResponse);
+
+  // Remove a tenant (worker) from the tree
+  rpc RemoveTenant(RemoveTenantRequest) returns (RemoveTenantResponse);
+
+  // Trigger eviction to limit tree size
+  rpc Evict(EvictRequest) returns (EvictResponse);
+
+  // Get tree statistics
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+
+  // Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Streaming interface for continuous routing decisions
+  rpc RouteRequests(stream RouteRequest) returns (stream RouteResponse);
+}
+
+// =====================
+// Insert Operations
+// =====================
+
+message InsertRequest {
+  // The model/tree identifier (for multi-model support)
+  string model_id = 1;
+  // The text to insert
+  string text = 2;
+  // The tenant/worker ID
+  string tenant_id = 3;
+}
+
+message InsertResponse {
+  bool success = 1;
+  // Number of characters added
+  uint64 chars_added = 2;
+}
+
+message BatchInsertRequest {
+  string model_id = 1;
+  repeated InsertEntry entries = 2;
+}
+
+message InsertEntry {
+  string text = 1;
+  string tenant_id = 2;
+}
+
+message BatchInsertResponse {
+  bool success = 1;
+  uint64 total_chars_added = 2;
+  uint32 entries_processed = 3;
+}
+
+// =====================
+// Match Operations
+// =====================
+
+message PrefixMatchRequest {
+  string model_id = 1;
+  string text = 2;
+}
+
+message PrefixMatchResponse {
+  // The matched prefix text
+  string matched_text = 1;
+  // The tenant/worker that owns this prefix
+  string tenant_id = 2;
+  // Match ratio (matched_chars / total_chars)
+  float match_ratio = 3;
+}
+
+message BatchPrefixMatchRequest {
+  string model_id = 1;
+  repeated string texts = 2;
+}
+
+message BatchPrefixMatchResponse {
+  repeated PrefixMatchResult results = 1;
+}
+
+message PrefixMatchResult {
+  string matched_text = 1;
+  string tenant_id = 2;
+  float match_ratio = 3;
+}
+
+message PrefixMatchTenantRequest {
+  string model_id = 1;
+  string text = 2;
+  string tenant_id = 3;
+}
+
+message PrefixMatchTenantResponse {
+  string matched_text = 1;
+  float match_ratio = 2;
+}
+
+// =====================
+// Tenant Management
+// =====================
+
+message RemoveTenantRequest {
+  string model_id = 1;
+  string tenant_id = 2;
+}
+
+message RemoveTenantResponse {
+  bool success = 1;
+  uint64 chars_removed = 2;
+}
+
+// =====================
+// Eviction
+// =====================
+
+message EvictRequest {
+  string model_id = 1;
+  // Maximum size per tenant in characters
+  uint64 max_size_per_tenant = 2;
+}
+
+message EvictResponse {
+  bool success = 1;
+  // Characters evicted per tenant
+  map<string, uint64> chars_evicted = 2;
+}
+
+// =====================
+// Statistics
+// =====================
+
+message GetStatsRequest {
+  // Empty for global stats, or specify model_id for model-specific stats
+  optional string model_id = 1;
+}
+
+message GetStatsResponse {
+  // Total nodes in tree(s)
+  uint64 total_nodes = 1;
+  // Total tenants
+  uint64 total_tenants = 2;
+  // Total characters stored
+  uint64 total_chars = 3;
+  // Per-tenant character counts
+  map<string, uint64> tenant_char_counts = 4;
+  // Per-model statistics
+  map<string, ModelStats> model_stats = 5;
+}
+
+message ModelStats {
+  uint64 node_count = 1;
+  uint64 tenant_count = 2;
+  uint64 total_chars = 3;
+}
+
+// =====================
+// Health Check
+// =====================
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  string message = 2;
+  // Uptime in seconds
+  uint64 uptime_secs = 3;
+  // Requests processed
+  uint64 requests_processed = 4;
+}
+
+// =====================
+// Streaming Routing
+// =====================
+
+// Streaming request for continuous routing decisions
+message RouteRequest {
+  string request_id = 1;
+  string model_id = 2;
+  string text = 3;
+  // Optional: filter to specific tenants
+  repeated string candidate_tenants = 4;
+}
+
+// Streaming response with routing decision
+message RouteResponse {
+  string request_id = 1;
+  // Recommended tenant/worker for this request
+  string recommended_tenant = 2;
+  // Match quality score (0.0 - 1.0)
+  float match_score = 3;
+  // Alternative tenants with their scores
+  repeated TenantScore alternatives = 4;
+}
+
+message TenantScore {
+  string tenant_id = 1;
+  float score = 2;
+}

@@ -9,20 +9,30 @@ use crate::core::Worker;
 
 mod bucket;
 mod cache_aware;
+mod cache_aware_hybrid;
 mod factory;
 mod power_of_two;
 mod random;
 mod registry;
 mod round_robin;
 pub mod tree;
+pub mod tree_optimized;
+
+#[cfg(feature = "grpc-server")]
+pub mod radix_tree_grpc;
 
 pub use bucket::BucketPolicy;
 pub use cache_aware::CacheAwarePolicy;
+pub use cache_aware_hybrid::{CacheAwareHybridConfig, CacheAwareHybridPolicy};
 pub use factory::PolicyFactory;
 pub use power_of_two::PowerOfTwoPolicy;
 pub use random::RandomPolicy;
 pub use registry::PolicyRegistry;
 pub use round_robin::RoundRobinPolicy;
+pub use tree_optimized::OptimizedTree;
+
+#[cfg(feature = "grpc-server")]
+pub use radix_tree_grpc::{RadixTreeGrpcClient, RadixTreeGrpcConfig, RadixTreeGrpcServer};
 
 /// Core trait for load balancing policies
 ///
