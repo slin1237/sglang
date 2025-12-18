@@ -452,15 +452,22 @@ impl Tree {
                             tenant_last_access_time: matched_node.tenant_last_access_time.clone(),
                         });
 
-                        let first_new_char = contracted_text.first_char().unwrap();
+                        // CRITICAL: Update matched_node's text and parent BEFORE making it visible
+                        // through new_node's children. This prevents race conditions where another
+                        // thread sees matched_node with stale text content.
+                        *matched_node.text.write().unwrap() = contracted_text;
+                        *matched_node.parent.write().unwrap() = Some(Arc::clone(&new_node));
+
+                        // Now get the first char from the UPDATED text
+                        let first_new_char = matched_node.text.read().unwrap().first_char().unwrap();
+
+                        // Now safe to add to children - matched_node has correct text
                         new_node
                             .children
                             .insert(first_new_char, Arc::clone(&matched_node));
 
+                        // Finally, make new_node visible in the tree
                         entry.insert(Arc::clone(&new_node));
-
-                        *matched_node.text.write().unwrap() = contracted_text;
-                        *matched_node.parent.write().unwrap() = Some(Arc::clone(&new_node));
 
                         prev = Arc::clone(&new_node);
 
