@@ -563,8 +563,9 @@ impl Tree {
 
         // OPTIMIZATION: Only update timestamps probabilistically (every N operations)
         // This reduces O(depth) RwLock traversals by 90% while maintaining LRU accuracy
-        if should_update_timestamps() {
-            if let Some(ref tenant_id) = tenant {
+        // Only check probability when we have a tenant to update (avoid atomic op on cache miss)
+        if let Some(ref tenant_id) = tenant {
+            if should_update_timestamps() {
                 let timestamp_ms = get_timestamp_ms();
                 let mut current_node = Some(curr);
                 while let Some(node) = current_node {
