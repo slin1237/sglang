@@ -15,6 +15,7 @@ mod random;
 mod registry;
 mod round_robin;
 pub mod tree;
+pub mod tree_optimized;
 
 pub use bucket::BucketPolicy;
 pub use cache_aware::CacheAwarePolicy;

@@ -1,0 +1,321 @@
+// Cache Tree Service Protocol Buffer Definition
+//
+// This defines the gRPC API for a standalone radix tree cache service
+// that can be deployed separately from the model gateway for horizontal scaling.
+
+syntax = "proto3";
+
+package sglang.cache;
+
+option go_package = "github.com/sgl-project/sglang/pkg/cache";
+
+// CacheTreeService provides cache-aware routing decisions based on prefix matching.
+// It maintains radix trees per model to track request patterns and cache affinity.
+service CacheTreeService {
+    // =========================================================================
+    // Core Operations
+    // =========================================================================
+
+    // Insert text into the tree for a tenant (worker).
+    // Used to record which worker handled which request patterns.
+    rpc Insert(InsertRequest) returns (InsertResponse);
+
+    // Find the best prefix match in the tree.
+    // Returns the matched prefix and the tenant (worker) that has it cached.
+    rpc PrefixMatch(PrefixMatchRequest) returns (PrefixMatchResponse);
+
+    // Find prefix match for a specific tenant only.
+    // Useful when routing to a specific worker.
+    rpc PrefixMatchTenant(PrefixMatchTenantRequest) returns (PrefixMatchResponse);
+
+    // Remove a tenant (worker) from the tree.
+    // Called when a worker goes offline or is removed from the pool.
+    rpc RemoveTenant(RemoveTenantRequest) returns (RemoveTenantResponse);
+
+    // =========================================================================
+    // Batch Operations (for high throughput)
+    // =========================================================================
+
+    // Batch insert multiple entries in a single RPC.
+    // Amortizes network overhead for bulk operations.
+    rpc BatchInsert(BatchInsertRequest) returns (BatchInsertResponse);
+
+    // Batch prefix match for multiple queries.
+    // Useful for routing multiple requests in a batch.
+    rpc BatchPrefixMatch(BatchPrefixMatchRequest) returns (BatchPrefixMatchResponse);
+
+    // =========================================================================
+    // Streaming Operations (for very high throughput)
+    // =========================================================================
+
+    // Stream inserts for continuous high-throughput ingestion.
+    // Fire-and-forget pattern - responses are minimal.
+    rpc StreamInsert(stream InsertRequest) returns (StreamInsertResponse);
+
+    // Bidirectional streaming for continuous matching.
+    // Suitable for persistent connections with low latency requirements.
+    rpc StreamPrefixMatch(stream PrefixMatchRequest) returns (stream PrefixMatchResponse);
+
+    // =========================================================================
+    // Admin Operations
+    // =========================================================================
+
+    // Get statistics about tree usage.
+    rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+
+    // Manually trigger eviction for a model's tree.
+    rpc Evict(EvictRequest) returns (EvictResponse);
+
+    // Health check endpoint.
+    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+    // List all models with active trees.
+    rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+}
+
+// =========================================================================
+// Request/Response Messages
+// =========================================================================
+
+message InsertRequest {
+    // Model ID (e.g., "llama-70b", "gpt-4")
+    string model_id = 1;
+
+    // The text/prompt to insert (can be truncated for efficiency)
+    string text = 2;
+
+    // Tenant ID (typically worker URL like "http://worker1:8000")
+    string tenant_id = 3;
+
+    // Optional: client-provided timestamp (milliseconds since epoch)
+    // If not provided, server uses current time
+    int64 timestamp_ms = 4;
+
+    // Optional: request ID for tracing
+    string request_id = 5;
+}
+
+message InsertResponse {
+    bool success = 1;
+
+    // Current tree size (char count) for this tenant
+    int64 tenant_size = 2;
+
+    // Processing latency in microseconds
+    int64 latency_us = 3;
+}
+
+message PrefixMatchRequest {
+    // Model ID to query
+    string model_id = 1;
+
+    // Text to match against the tree
+    string text = 2;
+
+    // Optional: request ID for tracing
+    string request_id = 3;
+}
+
+message PrefixMatchTenantRequest {
+    // Model ID to query
+    string model_id = 1;
+
+    // Text to match
+    string text = 2;
+
+    // Specific tenant to match against
+    string tenant_id = 3;
+
+    // Optional: request ID for tracing
+    string request_id = 4;
+}
+
+message PrefixMatchResponse {
+    // The matched prefix text
+    string matched_text = 1;
+
+    // The tenant that has this prefix (worker URL)
+    string matched_tenant = 2;
+
+    // Match ratio: matched_chars / total_chars (0.0 to 1.0)
+    float match_ratio = 3;
+
+    // Number of characters matched
+    int32 matched_chars = 4;
+
+    // Processing latency in microseconds
+    int64 latency_us = 5;
+}
+
+message RemoveTenantRequest {
+    // Model ID (or empty for all models)
+    string model_id = 1;
+
+    // Tenant to remove
+    string tenant_id = 2;
+}
+
+message RemoveTenantResponse {
+    bool success = 1;
+
+    // Number of nodes affected
+    int64 nodes_removed = 2;
+}
+
+// =========================================================================
+// Batch Messages
+// =========================================================================
+
+message BatchInsertRequest {
+    repeated InsertRequest requests = 1;
+}
+
+message BatchInsertResponse {
+    repeated InsertResponse responses = 1;
+
+    // Total processing latency
+    int64 total_latency_us = 2;
+}
+
+message BatchPrefixMatchRequest {
+    repeated PrefixMatchRequest requests = 1;
+}
+
+message BatchPrefixMatchResponse {
+    repeated PrefixMatchResponse responses = 1;
+
+    // Total processing latency
+    int64 total_latency_us = 2;
+}
+
+// =========================================================================
+// Streaming Messages
+// =========================================================================
+
+message StreamInsertResponse {
+    // Total inserts processed
+    int64 total_processed = 1;
+
+    // Total processing time
+    int64 total_latency_us = 2;
+
+    // Any errors encountered
+    repeated string errors = 3;
+}
+
+// =========================================================================
+// Admin Messages
+// =========================================================================
+
+message GetStatsRequest {
+    // Optional: filter to specific model (empty = all models)
+    string model_id = 1;
+}
+
+message GetStatsResponse {
+    // Stats per model
+    map<string, ModelStats> model_stats = 1;
+
+    // Global stats
+    GlobalStats global_stats = 2;
+}
+
+message ModelStats {
+    // Total nodes in the tree
+    int64 total_nodes = 1;
+
+    // Total characters stored
+    int64 total_chars = 2;
+
+    // Per-tenant character counts
+    map<string, int64> tenant_char_counts = 3;
+
+    // Performance metrics (rolling window)
+    int64 inserts_per_sec = 4;
+    int64 matches_per_sec = 5;
+    double avg_insert_latency_us = 6;
+    double avg_match_latency_us = 7;
+    double p99_match_latency_us = 8;
+
+    // Cache hit metrics
+    double avg_match_ratio = 9;
+    int64 cache_hits = 10;  // match_ratio > threshold
+    int64 cache_misses = 11;
+}
+
+message GlobalStats {
+    // Service uptime in seconds
+    int64 uptime_seconds = 1;
+
+    // Total operations processed
+    int64 total_inserts = 2;
+    int64 total_matches = 3;
+
+    // Memory usage
+    int64 memory_bytes = 4;
+
+    // Active models
+    int32 active_models = 5;
+
+    // Active tenants
+    int32 active_tenants = 6;
+}
+
+message EvictRequest {
+    // Model to evict (required)
+    string model_id = 1;
+
+    // Maximum size to evict to (characters per tenant)
+    int64 max_size = 2;
+
+    // Optional: specific tenant to evict (empty = all tenants)
+    string tenant_id = 3;
+}
+
+message EvictResponse {
+    bool success = 1;
+
+    // Number of entries evicted
+    int64 evicted_count = 2;
+
+    // New size after eviction
+    int64 new_size = 3;
+
+    // Eviction duration
+    int64 duration_us = 4;
+}
+
+message HealthCheckRequest {
+    // Optional: include detailed status
+    bool include_details = 1;
+}
+
+message HealthCheckResponse {
+    // Overall health status
+    bool healthy = 1;
+
+    // Service version
+    string version = 2;
+
+    // Uptime in seconds
+    int64 uptime_seconds = 3;
+
+    // Status message
+    string status = 4;
+
+    // Detailed component health (if requested)
+    map<string, bool> component_health = 5;
+}
+
+message ListModelsRequest {
+    // Optional: include stats for each model
+    bool include_stats = 1;
+}
+
+message ListModelsResponse {
+    // List of model IDs with active trees
+    repeated string model_ids = 1;
+
+    // Optional: stats per model
+    map<string, ModelStats> stats = 2;
+}
