@@ -47,7 +47,10 @@ use crate::{
         rerank::{RerankRequest, V1RerankReqInput},
         responses::{ResponsesGetParams, ResponsesRequest},
         validated::ValidatedJson,
-        worker_spec::{WorkerConfigRequest, WorkerErrorResponse, WorkerInfo, WorkerUpdateRequest},
+        worker_spec::{
+            WorkerConfigRequest, WorkerDeleteRequest, WorkerErrorResponse, WorkerInfo,
+            WorkerUpdateRequest,
+        },
     },
     routers::{conversations, router_manager::RouterManager, RouterTrait},
     service_discovery::{start_service_discovery, ServiceDiscoveryConfig},
@@ -562,9 +565,12 @@ async fn get_worker(State(state): State<Arc<AppState>>, Path(url): Path<String>)
     (StatusCode::NOT_FOUND, Json(error)).into_response()
 }
 
-async fn delete_worker(State(state): State<Arc<AppState>>, Path(url): Path<String>) -> Response {
-    let worker_id = url.clone();
-    let job = Job::RemoveWorker { url };
+async fn delete_worker(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<WorkerDeleteRequest>,
+) -> Response {
+    let worker_id = request.url.clone();
+    let job = Job::RemoveWorker { url: request.url };
 
     let job_queue = state
         .context
@@ -717,12 +723,13 @@ pub fn build_app(
         ));
 
     let worker_routes = Router::new()
-        .route("/workers", post(create_worker))
-        .route("/workers", get(list_workers_rest))
         .route(
-            "/workers/{url}",
-            get(get_worker).put(update_worker).delete(delete_worker),
+            "/workers",
+            post(create_worker)
+                .get(list_workers_rest)
+                .delete(delete_worker),
         )
+        .route("/workers/{url}", get(get_worker).put(update_worker))
         .route_layer(axum::middleware::from_fn_with_state(
             auth_config.clone(),
             middleware::auth_middleware,

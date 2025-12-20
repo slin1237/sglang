@@ -245,6 +245,13 @@ pub struct WorkerUpdateRequest {
     pub health_failure_threshold: Option<u32>,
 }
 
+/// Worker delete request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerDeleteRequest {
+    /// Worker URL to delete
+    pub url: String,
+}
+
 /// Generic API response
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkerApiResponse {
