@@ -46,6 +46,7 @@ use crate::{
         generate::GenerateRequest,
         rerank::{RerankRequest, V1RerankReqInput},
         responses::{ResponsesGetParams, ResponsesRequest},
+        tokenize::{DetokenizeRequest, TokenizeRequest},
         validated::ValidatedJson,
         worker_spec::{WorkerConfigRequest, WorkerErrorResponse, WorkerInfo, WorkerUpdateRequest},
     },
@@ -227,6 +228,50 @@ async fn v1_classify(
         .router
         .route_classify(Some(&headers), &body, Some(&body.model))
         .await
+}
+
+async fn v1_tokenize(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TokenizeRequest>,
+) -> Response {
+    match state.context.tokenizer_service.tokenize(&body).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            warn!("Tokenization failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "message": format!("Tokenization failed: {}", e),
+                        "type": "tokenization_error"
+                    }
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn v1_detokenize(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DetokenizeRequest>,
+) -> Response {
+    match state.context.tokenizer_service.detokenize(&body).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            warn!("Detokenization failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "message": format!("Detokenization failed: {}", e),
+                        "type": "detokenization_error"
+                    }
+                })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn v1_responses_get(
@@ -657,6 +702,10 @@ pub fn build_app(
         .route("/v1/responses", post(v1_responses))
         .route("/v1/embeddings", post(v1_embeddings))
         .route("/v1/classify", post(v1_classify))
+        .route("/v1/tokenize", post(v1_tokenize))
+        .route("/tokenize", post(v1_tokenize))
+        .route("/v1/detokenize", post(v1_detokenize))
+        .route("/detokenize", post(v1_detokenize))
         .route("/v1/responses/{response_id}", get(v1_responses_get))
         .route(
             "/v1/responses/{response_id}/cancel",

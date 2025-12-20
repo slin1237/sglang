@@ -609,11 +609,13 @@ mod tests {
     }
 
     async fn create_test_app_context() -> Arc<AppContext> {
-        use crate::{config::RouterConfig, middleware::TokenBucket};
+        use crate::{config::RouterConfig, middleware::TokenBucket, tokenizer::TokenizerService};
 
         let router_config = RouterConfig::builder()
             .worker_startup_timeout_secs(1)
             .build_unchecked();
+
+        let worker_registry = Arc::new(crate::core::WorkerRegistry::new());
 
         // Note: Using uninitialized queue for tests to avoid spawning background workers
         // Jobs submitted during tests will queue but not be processed
@@ -621,11 +623,12 @@ mod tests {
             client: reqwest::Client::new(),
             router_config: router_config.clone(),
             rate_limiter: Some(Arc::new(TokenBucket::new(1000, 1000))),
-            worker_registry: Arc::new(crate::core::WorkerRegistry::new()),
+            worker_registry: worker_registry.clone(),
             policy_registry: Arc::new(crate::policies::PolicyRegistry::new(
                 router_config.policy.clone(),
             )),
             tokenizer: None,
+            tokenizer_service: Arc::new(TokenizerService::new(worker_registry)),
             reasoning_parser_factory: None,
             tool_parser_factory: None,
             router_manager: None,

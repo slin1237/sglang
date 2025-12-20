@@ -20,6 +20,7 @@ use crate::{
     tokenizer::{
         cache::{CacheConfig, CachedTokenizer},
         factory as tokenizer_factory,
+        service::TokenizerService,
         traits::Tokenizer,
     },
     tool_parser::ParserFactory as ToolParserFactory,
@@ -45,6 +46,7 @@ pub struct AppContext {
     pub router_config: RouterConfig,
     pub rate_limiter: Option<Arc<TokenBucket>>,
     pub tokenizer: Option<Arc<dyn Tokenizer>>,
+    pub tokenizer_service: Arc<TokenizerService>,
     pub reasoning_parser_factory: Option<ReasoningParserFactory>,
     pub tool_parser_factory: Option<ToolParserFactory>,
     pub worker_registry: Arc<WorkerRegistry>,
@@ -67,6 +69,7 @@ pub struct AppContextBuilder {
     router_config: Option<RouterConfig>,
     rate_limiter: Option<Arc<TokenBucket>>,
     tokenizer: Option<Arc<dyn Tokenizer>>,
+    tokenizer_service: Option<Arc<TokenizerService>>,
     reasoning_parser_factory: Option<ReasoningParserFactory>,
     tool_parser_factory: Option<ToolParserFactory>,
     worker_registry: Option<Arc<WorkerRegistry>>,
@@ -107,6 +110,7 @@ impl AppContextBuilder {
             router_config: None,
             rate_limiter: None,
             tokenizer: None,
+            tokenizer_service: None,
             reasoning_parser_factory: None,
             tool_parser_factory: None,
             worker_registry: None,
@@ -229,6 +233,9 @@ impl AppContextBuilder {
             router_config,
             rate_limiter: self.rate_limiter,
             tokenizer: self.tokenizer,
+            tokenizer_service: self
+                .tokenizer_service
+                .ok_or(AppContextBuildError("tokenizer_service"))?,
             reasoning_parser_factory: self.reasoning_parser_factory,
             tool_parser_factory: self.tool_parser_factory,
             worker_registry: self
@@ -276,6 +283,7 @@ impl AppContextBuilder {
             .maybe_reasoning_parser_factory(&router_config)
             .maybe_tool_parser_factory(&router_config)
             .with_worker_registry()
+            .with_tokenizer_service(&router_config)
             .with_policy_registry(&router_config)
             .with_storage(&router_config)?
             .with_load_monitor(&router_config)
@@ -432,6 +440,28 @@ impl AppContextBuilder {
     /// Create worker registry
     fn with_worker_registry(mut self) -> Self {
         self.worker_registry = Some(Arc::new(WorkerRegistry::new()));
+        self
+    }
+
+    /// Create tokenizer service for /tokenize and /detokenize endpoints
+    fn with_tokenizer_service(mut self, config: &RouterConfig) -> Self {
+        let worker_registry = self
+            .worker_registry
+            .as_ref()
+            .expect("worker_registry must be set before tokenizer_service")
+            .clone();
+
+        let cache_config = CacheConfig {
+            enable_l0: config.tokenizer_cache.enable_l0,
+            l0_max_entries: config.tokenizer_cache.l0_max_entries,
+            enable_l1: config.tokenizer_cache.enable_l1,
+            l1_max_memory: config.tokenizer_cache.l1_max_memory,
+        };
+
+        self.tokenizer_service = Some(Arc::new(TokenizerService::with_cache_config(
+            worker_registry,
+            cache_config,
+        )));
         self
     }
 

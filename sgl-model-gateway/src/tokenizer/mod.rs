@@ -7,6 +7,7 @@ pub mod factory;
 pub mod hub;
 pub mod mock;
 pub mod sequence;
+pub mod service;
 pub mod stop;
 pub mod stream;
 pub mod traits;
@@ -31,6 +32,7 @@ pub use factory::{
 };
 pub use huggingface::HuggingFaceTokenizer;
 pub use sequence::Sequence;
+pub use service::TokenizerService;
 pub use stop::{SequenceDecoderOutput, StopSequenceConfig, StopSequenceDecoder};
 pub use stream::DecodeStream;
 pub use tiktoken::{TiktokenModel, TiktokenTokenizer};
