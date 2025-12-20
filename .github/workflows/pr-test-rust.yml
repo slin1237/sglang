@@ -57,6 +57,15 @@ jobs:
         with:
           version: "v0.10.0"
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: "rust-cache"
+          cache-all-crates: true
+          cache-on-failure: true
+          save-if: true
+
       - name: Test maturin build
         uses: PyO3/maturin-action@v1
         with:
@@ -97,8 +106,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: sgl-model-gateway
+          shared-key: "rust-cache"
           cache-all-crates: true
           cache-on-failure: true
+          save-if: true
 
       - name: Run lint
         run: |
@@ -159,8 +170,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: sgl-model-gateway
+          shared-key: "rust-cache"
           cache-all-crates: true
           cache-on-failure: true
+          save-if: true
 
       - name: Install SGLang dependencies
         run: |
@@ -231,8 +244,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: sgl-model-gateway
+          shared-key: "rust-cache"
           cache-all-crates: true
           cache-on-failure: true
+          save-if: true
 
       - name: Install SGLang dependencies
         run: |
