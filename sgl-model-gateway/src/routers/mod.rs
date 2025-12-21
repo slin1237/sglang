@@ -29,6 +29,9 @@ pub mod http;
 pub mod openai;
 pub mod router_manager;
 pub mod tokenize;
+pub mod tokenizer_cache;
+
+pub use tokenizer_cache::TokenizerCache;
 
 pub use factory::RouterFactory;
 // Re-export HTTP routers for convenience

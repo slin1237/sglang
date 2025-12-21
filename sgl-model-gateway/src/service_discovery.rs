@@ -609,7 +609,7 @@ mod tests {
     }
 
     async fn create_test_app_context() -> Arc<AppContext> {
-        use crate::{config::RouterConfig, middleware::TokenBucket, tokenizer::TokenizerCache};
+        use crate::{config::RouterConfig, middleware::TokenBucket, routers::TokenizerCache};
 
         let router_config = RouterConfig::builder()
             .worker_startup_timeout_secs(1)

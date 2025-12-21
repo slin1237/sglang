@@ -5,12 +5,10 @@
 
 use anyhow::Result;
 
-use crate::{
-    protocols::tokenize::{
-        CountOutput, DetokenizeRequest, DetokenizeResponse, StringOrArray, TextOutput,
-        TokenizeRequest, TokenizeResponse, TokensInput, TokensOutput,
-    },
-    tokenizer::TokenizerCache,
+use super::tokenizer_cache::TokenizerCache;
+use crate::protocols::tokenize::{
+    CountOutput, DetokenizeRequest, DetokenizeResponse, StringOrArray, TextOutput,
+    TokenizeRequest, TokenizeResponse, TokensInput, TokensOutput,
 };
 
 /// Default max model length when not available from tokenizer
@@ -81,6 +79,7 @@ pub async fn handle_detokenize(
 mod tests {
     use std::sync::Arc;
 
+    use super::tokenizer_cache::TokenizerCache;
     use super::*;
     use crate::core::WorkerRegistry;
 

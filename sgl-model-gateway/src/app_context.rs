@@ -16,11 +16,10 @@ use crate::{
     middleware::TokenBucket,
     policies::PolicyRegistry,
     reasoning_parser::ParserFactory as ReasoningParserFactory,
-    routers::router_manager::RouterManager,
+    routers::{router_manager::RouterManager, TokenizerCache},
     tokenizer::{
         cache::{CacheConfig, CachedTokenizer},
         factory as tokenizer_factory,
-        model_cache::TokenizerCache,
         traits::Tokenizer,
     },
     tool_parser::ParserFactory as ToolParserFactory,
