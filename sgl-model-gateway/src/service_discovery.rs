@@ -609,7 +609,7 @@ mod tests {
     }
 
     async fn create_test_app_context() -> Arc<AppContext> {
-        use crate::{config::RouterConfig, middleware::TokenBucket, tokenizer::TokenizerService};
+        use crate::{config::RouterConfig, middleware::TokenBucket, tokenizer::TokenizerCache};
 
         let router_config = RouterConfig::builder()
             .worker_startup_timeout_secs(1)
@@ -628,7 +628,7 @@ mod tests {
                 router_config.policy.clone(),
             )),
             tokenizer: None,
-            tokenizer_service: Arc::new(TokenizerService::new(worker_registry)),
+            tokenizer_cache: Arc::new(TokenizerCache::new(worker_registry)),
             reasoning_parser_factory: None,
             tool_parser_factory: None,
             router_manager: None,

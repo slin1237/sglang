@@ -234,7 +234,7 @@ async fn v1_tokenize(
     State(state): State<Arc<AppState>>,
     Json(body): Json<TokenizeRequest>,
 ) -> Response {
-    match state.context.tokenizer_service.tokenize(&body).await {
+    match crate::routers::tokenize::handle_tokenize(&state.context.tokenizer_cache, &body).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
             warn!("Tokenization failed: {}", e);
@@ -256,7 +256,7 @@ async fn v1_detokenize(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DetokenizeRequest>,
 ) -> Response {
-    match state.context.tokenizer_service.detokenize(&body).await {
+    match crate::routers::tokenize::handle_detokenize(&state.context.tokenizer_cache, &body).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => {
             warn!("Detokenization failed: {}", e);

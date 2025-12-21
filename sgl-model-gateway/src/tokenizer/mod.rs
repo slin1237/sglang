@@ -6,8 +6,8 @@ pub mod cache;
 pub mod factory;
 pub mod hub;
 pub mod mock;
+pub mod model_cache;
 pub mod sequence;
-pub mod service;
 pub mod stop;
 pub mod stream;
 pub mod traits;
@@ -31,8 +31,8 @@ pub use factory::{
     create_tokenizer_with_chat_template_blocking, TokenizerType,
 };
 pub use huggingface::HuggingFaceTokenizer;
+pub use model_cache::TokenizerCache;
 pub use sequence::Sequence;
-pub use service::TokenizerService;
 pub use stop::{SequenceDecoderOutput, StopSequenceConfig, StopSequenceDecoder};
 pub use stream::DecodeStream;
 pub use tiktoken::{TiktokenModel, TiktokenTokenizer};
