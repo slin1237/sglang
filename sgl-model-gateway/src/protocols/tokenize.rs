@@ -140,12 +140,11 @@ pub struct AddTokenizerRequest {
 /// Response schema for adding a tokenizer (async)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddTokenizerResponse {
+    /// Unique identifier for the tokenizer (UUID)
+    pub id: String,
     /// Status of the request: "pending", "processing", "completed", "failed"
     pub status: String,
     pub message: String,
-    /// Job ID for tracking the tokenizer loading progress
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<String>,
     /// Vocabulary size of the loaded tokenizer (only set on completion)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vocab_size: Option<usize>,
@@ -160,7 +159,12 @@ pub struct ListTokenizersResponse {
 /// Information about a registered tokenizer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenizerInfo {
+    /// Unique identifier (UUID)
+    pub id: String,
+    /// User-provided name
     pub name: String,
+    /// Source path or HuggingFace model ID
+    pub source: String,
     pub vocab_size: usize,
 }
 

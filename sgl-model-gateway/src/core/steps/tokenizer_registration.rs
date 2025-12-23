@@ -16,7 +16,9 @@ use crate::{app_context::AppContext, tokenizer::factory, workflow::*};
 /// Configuration for adding a tokenizer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenizerConfigRequest {
-    /// Name to register the tokenizer under
+    /// Pre-generated UUID for this tokenizer
+    pub id: String,
+    /// User-provided name
     pub name: String,
     /// Source: either a local path or HuggingFace model ID
     pub source: String,
@@ -27,8 +29,8 @@ pub struct TokenizerConfigRequest {
 /// Configuration for removing a tokenizer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenizerRemovalRequest {
-    /// Name of the tokenizer to remove
-    pub name: String,
+    /// UUID of the tokenizer to remove
+    pub id: String,
 }
 
 // ============================================================================
@@ -102,14 +104,14 @@ impl StepExecutor for LoadTokenizerStep {
             .ok_or_else(|| WorkflowError::ContextValueNotFound("app_context".to_string()))?;
 
         info!(
-            "Loading tokenizer '{}' from source: {}",
-            config.name, config.source
+            "Loading tokenizer '{}' (id: {}) from source: {}",
+            config.name, config.id, config.source
         );
 
         // Load the tokenizer using the registry's load method (handles deduplication)
         let result = app_context
             .tokenizer_registry
-            .load(&config.name, || {
+            .load(&config.id, &config.name, &config.source, || {
                 let source = config.source.clone();
                 let chat_template = config.chat_template_path.clone();
                 async move {
@@ -124,16 +126,16 @@ impl StepExecutor for LoadTokenizerStep {
             .await;
 
         match result {
-            Ok(true) => {
+            Ok(loaded_id) => {
                 // Get vocab size for logging
                 let vocab_size = app_context
                     .tokenizer_registry
-                    .get(&config.name)
-                    .map(|t| t.vocab_size());
+                    .get_by_id(&loaded_id)
+                    .map(|e| e.tokenizer.vocab_size());
 
                 info!(
-                    "Successfully loaded tokenizer '{}' with vocab_size: {:?}",
-                    config.name, vocab_size
+                    "Successfully loaded tokenizer '{}' (id: {}) with vocab_size: {:?}",
+                    config.name, loaded_id, vocab_size
                 );
 
                 // Store vocab size in context for later use
@@ -141,14 +143,6 @@ impl StepExecutor for LoadTokenizerStep {
                     context.set("vocab_size", size);
                 }
 
-                Ok(StepResult::Success)
-            }
-            Ok(false) => {
-                // Already exists (race condition)
-                info!(
-                    "Tokenizer '{}' was already loaded by another request",
-                    config.name
-                );
                 Ok(StepResult::Success)
             }
             Err(e) => {
@@ -213,6 +207,7 @@ mod tests {
     #[test]
     fn test_tokenizer_config_request_serialization() {
         let config = TokenizerConfigRequest {
+            id: "test-uuid-1234".to_string(),
             name: "test-model".to_string(),
             source: "meta-llama/Llama-2-7b-hf".to_string(),
             chat_template_path: None,
@@ -221,6 +216,7 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let parsed: TokenizerConfigRequest = serde_json::from_str(&json).unwrap();
 
+        assert_eq!(parsed.id, "test-uuid-1234");
         assert_eq!(parsed.name, "test-model");
         assert_eq!(parsed.source, "meta-llama/Llama-2-7b-hf");
         assert!(parsed.chat_template_path.is_none());

@@ -493,23 +493,23 @@ async fn v1_tokenizers_list(State(state): State<Arc<AppState>>) -> Response {
 
 async fn v1_tokenizers_get(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path(tokenizer_id): Path<String>,
 ) -> Response {
-    tokenize::get_tokenizer_info(&state.context.tokenizer_registry, &name).await
+    tokenize::get_tokenizer_info(&state.context, &tokenizer_id).await
 }
 
 async fn v1_tokenizers_status(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path(tokenizer_id): Path<String>,
 ) -> Response {
-    tokenize::get_tokenizer_status(&state.context, &name).await
+    tokenize::get_tokenizer_status(&state.context, &tokenizer_id).await
 }
 
 async fn v1_tokenizers_remove(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path(tokenizer_id): Path<String>,
 ) -> Response {
-    tokenize::remove_tokenizer(&state.context.tokenizer_registry, &name).await
+    tokenize::remove_tokenizer(&state.context, &tokenizer_id).await
 }
 
 pub struct ServerConfig {
@@ -569,9 +569,7 @@ pub fn build_app(
         )
         // Tokenize / Detokenize endpoints
         .route("/v1/tokenize", post(v1_tokenize))
-        .route("/tokenize", post(v1_tokenize))
         .route("/v1/detokenize", post(v1_detokenize))
-        .route("/detokenize", post(v1_detokenize))
         .route_layer(axum::middleware::from_fn_with_state(
             app_state.clone(),
             middleware::concurrency_limit_middleware,
@@ -609,10 +607,13 @@ pub fn build_app(
             post(v1_tokenizers_add).get(v1_tokenizers_list),
         )
         .route(
-            "/v1/tokenizers/{name}",
+            "/v1/tokenizers/{tokenizer_id}",
             get(v1_tokenizers_get).delete(v1_tokenizers_remove),
         )
-        .route("/v1/tokenizers/{name}/status", get(v1_tokenizers_status))
+        .route(
+            "/v1/tokenizers/{tokenizer_id}/status",
+            get(v1_tokenizers_status),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             auth_config.clone(),
             middleware::auth_middleware,

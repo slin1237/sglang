@@ -459,17 +459,19 @@ impl AppContextBuilder {
         // Try to load router-level tokenizer if path is provided
         if let Some(tokenizer) = Self::maybe_tokenizer(config)? {
             // Determine registration key: prefer tokenizer_path, then model_path, finally "unknown"
-            let tokenizer_key = config
+            let source = config
                 .tokenizer_path
                 .as_ref()
                 .or(config.model_path.as_ref())
                 .map(|s| s.as_str())
                 .unwrap_or("unknown");
 
-            registry.register(tokenizer_key, tokenizer.clone());
+            let tokenizer_id = TokenizerRegistry::generate_id();
+            registry.register(&tokenizer_id, source, source, tokenizer.clone());
             info!(
-                "Tokenizer loaded and registered with key '{}' (vocab_size: {})",
-                tokenizer_key,
+                "Tokenizer loaded and registered with name '{}' id={} (vocab_size: {})",
+                source,
+                tokenizer_id,
                 tokenizer.vocab_size()
             );
         }

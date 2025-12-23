@@ -89,8 +89,8 @@ impl Job {
             Job::RegisterMcpServer { config } => &config.name,
             Job::AddWasmModule { config } => &config.descriptor.name,
             Job::RemoveWasmModule { request } => &request.uuid_string,
-            Job::AddTokenizer { config } => &config.name,
-            Job::RemoveTokenizer { request } => &request.name,
+            Job::AddTokenizer { config } => &config.id,
+            Job::RemoveTokenizer { request } => &request.id,
         }
     }
 }
@@ -687,8 +687,8 @@ impl JobQueue {
                     })?;
 
                 debug!(
-                    "Started tokenizer registration workflow for {} (instance: {})",
-                    config.name, instance_id
+                    "Started tokenizer registration workflow for '{}' id={} (instance: {})",
+                    config.name, config.id, instance_id
                 );
 
                 // Allow up to 10 minutes for HuggingFace downloads
@@ -697,18 +697,21 @@ impl JobQueue {
                 Self::wait_for_workflow_completion(
                     engine,
                     instance_id,
-                    &config.name,
+                    &config.id,
                     timeout_duration,
                 )
                 .await
             }
             Job::RemoveTokenizer { request } => {
                 // Tokenizer removal is synchronous and fast
-                if context.tokenizer_registry.remove(&request.name).is_some() {
-                    info!("Successfully removed tokenizer '{}'", request.name);
-                    Ok(format!("Tokenizer '{}' removed successfully", request.name))
+                if let Some(entry) = context.tokenizer_registry.remove_by_id(&request.id) {
+                    info!(
+                        "Successfully removed tokenizer '{}' (id: {})",
+                        entry.name, entry.id
+                    );
+                    Ok(format!("Tokenizer '{}' removed successfully", entry.name))
                 } else {
-                    Err(format!("Tokenizer '{}' not found", request.name))
+                    Err(format!("Tokenizer with id '{}' not found", request.id))
                 }
             }
         }
