@@ -17,8 +17,8 @@ use crate::{
     app_context::AppContext,
     config::{RouterConfig, RoutingMode},
     core::steps::{
-        McpServerConfigRequest, WasmModuleConfigRequest, WasmModuleRemovalRequest,
-        WorkerRemovalRequest,
+        McpServerConfigRequest, TokenizerConfigRequest, TokenizerRemovalRequest,
+        WasmModuleConfigRequest, WasmModuleRemovalRequest, WorkerRemovalRequest,
     },
     mcp::McpConfig,
     protocols::worker_spec::{JobStatus, WorkerConfigRequest, WorkerUpdateRequest},
@@ -53,6 +53,12 @@ pub enum Job {
     RemoveWasmModule {
         request: Box<WasmModuleRemovalRequest>,
     },
+    AddTokenizer {
+        config: Box<TokenizerConfigRequest>,
+    },
+    RemoveTokenizer {
+        request: Box<TokenizerRemovalRequest>,
+    },
 }
 
 impl Job {
@@ -67,10 +73,12 @@ impl Job {
             Job::RegisterMcpServer { .. } => "RegisterMcpServer",
             Job::AddWasmModule { .. } => "AddWasmModule",
             Job::RemoveWasmModule { .. } => "RemoveWasmModule",
+            Job::AddTokenizer { .. } => "AddTokenizer",
+            Job::RemoveTokenizer { .. } => "RemoveTokenizer",
         }
     }
 
-    /// Get worker URL, MCP server name, or WASM module identifier for logging and status tracking
+    /// Get worker URL, MCP server name, WASM module, or tokenizer identifier for logging and status tracking
     pub fn worker_url(&self) -> &str {
         match self {
             Job::AddWorker { config } => &config.url,
@@ -81,6 +89,8 @@ impl Job {
             Job::RegisterMcpServer { config } => &config.name,
             Job::AddWasmModule { config } => &config.descriptor.name,
             Job::RemoveWasmModule { request } => &request.uuid_string,
+            Job::AddTokenizer { config } => &config.name,
+            Job::RemoveTokenizer { request } => &request.name,
         }
     }
 }
@@ -657,6 +667,49 @@ impl JobQueue {
                     timeout_duration,
                 )
                 .await
+            }
+            Job::AddTokenizer { config } => {
+                let engine = context
+                    .workflow_engine
+                    .get()
+                    .ok_or_else(|| "Workflow engine not initialized".to_string())?;
+
+                let mut workflow_context = WorkflowContext::new(WorkflowInstanceId::new());
+                let config_arc: Arc<TokenizerConfigRequest> = Arc::new(*config.clone());
+                workflow_context.set_arc("tokenizer_config", config_arc);
+                workflow_context.set_arc("app_context", Arc::clone(context));
+
+                let instance_id = engine
+                    .start_workflow(WorkflowId::new("tokenizer_registration"), workflow_context)
+                    .await
+                    .map_err(|e| {
+                        format!("Failed to start tokenizer registration workflow: {:?}", e)
+                    })?;
+
+                debug!(
+                    "Started tokenizer registration workflow for {} (instance: {})",
+                    config.name, instance_id
+                );
+
+                // Allow up to 10 minutes for HuggingFace downloads
+                let timeout_duration = Duration::from_secs(600);
+
+                Self::wait_for_workflow_completion(
+                    engine,
+                    instance_id,
+                    &config.name,
+                    timeout_duration,
+                )
+                .await
+            }
+            Job::RemoveTokenizer { request } => {
+                // Tokenizer removal is synchronous and fast
+                if context.tokenizer_registry.remove(&request.name).is_some() {
+                    info!("Successfully removed tokenizer '{}'", request.name);
+                    Ok(format!("Tokenizer '{}' removed successfully", request.name))
+                } else {
+                    Err(format!("Tokenizer '{}' not found", request.name))
+                }
             }
         }
     }

@@ -14,5 +14,6 @@ pub mod parser;
 pub mod rerank;
 pub mod responses;
 pub mod sampling_params;
+pub mod tokenize;
 pub mod validated;
 pub mod worker_spec;
