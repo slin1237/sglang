@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     app_context::AppContext,
@@ -184,11 +184,6 @@ pub async fn detokenize(registry: &Arc<TokenizerRegistry>, request: DetokenizeRe
 
 /// Handle POST /v1/tokenizers - async version using job queue
 pub async fn add_tokenizer(context: &Arc<AppContext>, request: AddTokenizerRequest) -> Response {
-    info!(
-        "Submitting tokenizer job for '{}' from source: {}",
-        request.name, request.source
-    );
-
     // Check if tokenizer already exists
     if context.tokenizer_registry.contains(&request.name) {
         return (
@@ -234,22 +229,19 @@ pub async fn add_tokenizer(context: &Arc<AppContext>, request: AddTokenizerReque
 
     // Submit the job
     match job_queue.submit(job).await {
-        Ok(()) => {
-            info!("Job submitted for tokenizer '{}'", request.name);
-            (
-                StatusCode::ACCEPTED,
-                Json(AddTokenizerResponse {
-                    status: "pending".to_string(),
-                    message: format!(
-                        "Tokenizer '{}' registration job submitted. Loading from: {}",
-                        request.name, request.source
-                    ),
-                    job_id: Some(request.name.clone()),
-                    vocab_size: None,
-                }),
-            )
-                .into_response()
-        }
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(AddTokenizerResponse {
+                status: "pending".to_string(),
+                message: format!(
+                    "Tokenizer '{}' registration job submitted. Loading from: {}",
+                    request.name, request.source
+                ),
+                job_id: Some(request.name.clone()),
+                vocab_size: None,
+            }),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to submit tokenizer job: {}", e);
             (
@@ -286,10 +278,8 @@ pub async fn list_tokenizers(registry: &Arc<TokenizerRegistry>) -> Response {
 
 /// Handle DELETE /v1/tokenizers/{name}
 pub async fn remove_tokenizer(registry: &Arc<TokenizerRegistry>, name: &str) -> Response {
-    info!("Removing tokenizer '{}'", name);
-
     if registry.remove(name).is_some() {
-        info!("Successfully removed tokenizer '{}'", name);
+        debug!("Removed tokenizer '{}'", name);
         (
             StatusCode::OK,
             Json(RemoveTokenizerResponse {
