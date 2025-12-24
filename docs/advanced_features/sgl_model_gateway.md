@@ -46,8 +46,14 @@ SGLang Model Gateway is a high-performance model-routing gateway for large-scale
     - [Prometheus Metrics](#prometheus-metrics)
     - [OpenTelemetry Tracing](#opentelemetry-tracing)
     - [Logging](#logging)
-17. [Configuration Reference](#configuration-reference)
-18. [Troubleshooting](#troubleshooting)
+17. [Production Recommendations](#production-recommendations)
+    - [Security](#security-1)
+    - [High Availability](#high-availability)
+    - [Performance](#performance)
+    - [Kubernetes Deployment](#kubernetes-deployment)
+    - [Monitoring with PromQL](#monitoring-with-promql)
+18. [Configuration Reference](#configuration-reference)
+19. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -993,6 +999,362 @@ Structured tracing with optional file sink. Log levels: `debug`, `info`, `warn`,
 ```
 
 Responses include `x-request-id` header for correlation.
+
+---
+
+## Production Recommendations
+
+This section provides guidance for deploying SGLang Model Gateway in production environments.
+
+### Security
+
+**Always enable TLS in production:**
+
+```bash
+python -m sglang_router.launch_router \
+  --worker-urls https://worker1:8443 https://worker2:8443 \
+  --tls-cert-path /etc/certs/server.crt \
+  --tls-key-path /etc/certs/server.key \
+  --client-cert-path /etc/certs/client.crt \
+  --client-key-path /etc/certs/client.key \
+  --ca-cert-path /etc/certs/ca.crt \
+  --api-key "${ROUTER_API_KEY}"
+```
+
+**Security Checklist:**
+- Enable TLS for gateway HTTPS termination
+- Enable mTLS for worker communication when workers are on untrusted networks
+- Set `--api-key` to protect router endpoints
+- Use Kubernetes Secrets or a secrets manager for credentials
+- Rotate certificates and API keys periodically
+- Restrict network access with firewalls or network policies
+
+### High Availability
+
+**Scaling Strategy:**
+
+The gateway supports running multiple replicas behind a load balancer for high availability. However, there are important considerations:
+
+| Component | Shared Across Replicas | Impact |
+|-----------|----------------------|--------|
+| Worker Registry | No (independent) | Each replica discovers workers independently |
+| Radix Cache Tree | No (independent) | Cache hits may decrease by 10-20% |
+| Circuit Breaker State | No (independent) | Each replica tracks failures independently |
+| Rate Limiting | No (independent) | Limits apply per-replica, not globally |
+
+**Recommendations:**
+
+1. **Prefer horizontal scaling over vertical scaling**: Deploy multiple smaller gateway replicas rather than one large instance with excessive CPU and memory. This provides:
+   - Better fault tolerance (single replica failure doesn't take down the gateway)
+   - More predictable resource usage
+   - Easier capacity planning
+
+2. **Use Kubernetes Service Discovery**: Let the gateway automatically discover and manage workers:
+   ```bash
+   python -m sglang_router.launch_router \
+     --service-discovery \
+     --selector app=sglang-worker \
+     --service-discovery-namespace production
+   ```
+
+3. **Accept cache efficiency trade-off**: With multiple replicas, the cache-aware routing policy's radix tree is not synchronized across replicas. This means:
+   - Each replica builds its own cache tree
+   - Requests from the same user may hit different replicas
+   - Expected cache hit rate reduction: **10-20%**
+   - This is often acceptable given the HA benefits
+
+4. **Configure session affinity (optional)**: If cache efficiency is critical, configure your load balancer for session affinity based on a consistent hash of the request (e.g., user ID or API key).
+
+**Example HA Architecture:**
+```
+                    ┌─────────────────┐
+                    │  Load Balancer  │
+                    │   (L4/L7)       │
+                    └────────┬────────┘
+              ┌──────────────┼──────────────┐
+              │              │              │
+        ┌─────▼─────┐  ┌─────▼─────┐  ┌─────▼─────┐
+        │  Gateway  │  │  Gateway  │  │  Gateway  │
+        │ Replica 1 │  │ Replica 2 │  │ Replica 3 │
+        └─────┬─────┘  └─────┬─────┘  └─────┬─────┘
+              │              │              │
+              └──────────────┼──────────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+        ┌─────▼─────┐  ┌─────▼─────┐  ┌─────▼─────┐
+        │  Worker   │  │  Worker   │  │  Worker   │
+        │  Pod 1    │  │  Pod 2    │  │  Pod N    │
+        └───────────┘  └───────────┘  └───────────┘
+```
+
+### Performance
+
+**Use gRPC mode for high throughput:**
+
+gRPC mode provides the highest performance for SGLang workers:
+
+```bash
+# Start workers in gRPC mode
+python -m sglang.launch_server \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  --grpc-mode \
+  --port 20000
+
+# Configure gateway for gRPC
+python -m sglang_router.launch_router \
+  --worker-urls grpc://worker1:20000 grpc://worker2:20000 \
+  --model-path meta-llama/Llama-3.1-8B-Instruct \
+  --policy cache_aware
+```
+
+**Performance Benefits of gRPC:**
+- Native Rust tokenization (no Python overhead)
+- Streaming with lower latency
+- Built-in reasoning parser execution
+- Tool call parsing in the gateway
+- Reduced serialization overhead
+
+**Tuning Recommendations:**
+
+| Parameter | Recommendation | Reason |
+|-----------|---------------|--------|
+| `--policy` | `cache_aware` | Best for repeated prompts, ~30% latency reduction |
+| `--max-concurrent-requests` | 2-4x worker count | Prevent overload while maximizing throughput |
+| `--queue-size` | 2x max-concurrent | Buffer for burst traffic |
+| `--request-timeout-secs` | Based on max generation length | Prevent stuck requests |
+
+### Kubernetes Deployment
+
+**Pod Labeling for Service Discovery:**
+
+For the gateway to discover workers automatically, label your worker pods consistently:
+
+```yaml
+# Worker Deployment (Regular Mode)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-worker
+  namespace: production
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: sglang-worker
+      component: inference
+  template:
+    metadata:
+      labels:
+        app: sglang-worker
+        component: inference
+        model: llama-3-8b
+    spec:
+      containers:
+      - name: worker
+        image: lmsysorg/sglang:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        - containerPort: 20000
+          name: grpc
+```
+
+**Gateway configuration for discovery:**
+```bash
+python -m sglang_router.launch_router \
+  --service-discovery \
+  --selector app=sglang-worker component=inference \
+  --service-discovery-namespace production \
+  --service-discovery-port 8000
+```
+
+**PD (Prefill/Decode) Mode Labeling:**
+
+```yaml
+# Prefill Worker
+metadata:
+  labels:
+    app: sglang-worker
+    component: prefill
+  annotations:
+    sglang.ai/bootstrap-port: "9001"
+
+# Decode Worker
+metadata:
+  labels:
+    app: sglang-worker
+    component: decode
+```
+
+**Gateway configuration for PD discovery:**
+```bash
+python -m sglang_router.launch_router \
+  --service-discovery \
+  --pd-disaggregation \
+  --prefill-selector app=sglang-worker component=prefill \
+  --decode-selector app=sglang-worker component=decode \
+  --service-discovery-namespace production
+```
+
+**RBAC Requirements:**
+
+The gateway needs permissions to watch pods:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sglang-gateway
+  namespace: production
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sglang-gateway
+  namespace: production
+subjects:
+- kind: ServiceAccount
+  name: sglang-gateway
+  namespace: production
+roleRef:
+  kind: Role
+  name: sglang-gateway
+  apiGroup: rbac.authorization.k8s.io
+```
+
+### Monitoring with PromQL
+
+Configure Prometheus to scrape the gateway metrics endpoint (default: `:29000/metrics`).
+
+**Essential Dashboards:**
+
+**1. Request Rate and Latency:**
+```promql
+# Request rate by endpoint
+sum(rate(smg_http_requests_total[5m])) by (path, method)
+
+# P50 latency
+histogram_quantile(0.50, sum(rate(smg_http_request_duration_seconds_bucket[5m])) by (le))
+
+# P99 latency
+histogram_quantile(0.99, sum(rate(smg_http_request_duration_seconds_bucket[5m])) by (le))
+
+# Error rate
+sum(rate(smg_http_responses_total{status=~"5.."}[5m])) / sum(rate(smg_http_responses_total[5m]))
+```
+
+**2. Worker Health:**
+```promql
+# Healthy workers
+sum(smg_worker_pool_size)
+
+# Active connections per worker
+smg_worker_connections_active
+
+# Worker health check failures
+sum(rate(smg_worker_health_checks_total{result="failure"}[5m])) by (worker_id)
+```
+
+**3. Circuit Breaker Status:**
+```promql
+# Circuit breaker states (0=closed, 1=open, 2=half-open)
+smg_worker_cb_state
+
+# Circuit breaker transitions
+sum(rate(smg_worker_cb_transitions_total[5m])) by (worker_id, from_state, to_state)
+
+# Workers with open circuits
+count(smg_worker_cb_state == 1)
+```
+
+**4. Inference Performance (gRPC mode):**
+```promql
+# Time to first token (P50)
+histogram_quantile(0.50, sum(rate(smg_router_ttft_seconds_bucket[5m])) by (le, model))
+
+# Time per output token (P99)
+histogram_quantile(0.99, sum(rate(smg_router_tpot_seconds_bucket[5m])) by (le, model))
+
+# Token throughput
+sum(rate(smg_router_tokens_total[5m])) by (model, direction)
+
+# Generation duration P95
+histogram_quantile(0.95, sum(rate(smg_router_generation_duration_seconds_bucket[5m])) by (le))
+```
+
+**5. Rate Limiting and Queuing:**
+```promql
+# Rate limit rejections
+sum(rate(smg_http_rate_limit_total{decision="rejected"}[5m]))
+
+# Queue depth (if using concurrency limiting)
+smg_worker_requests_active
+
+# Retry attempts
+sum(rate(smg_worker_retries_total[5m])) by (worker_id)
+
+# Exhausted retries (failures after all retries)
+sum(rate(smg_worker_retries_exhausted_total[5m]))
+```
+
+**6. MCP Tool Execution:**
+```promql
+# Tool call rate
+sum(rate(smg_mcp_tool_calls_total[5m])) by (server, tool)
+
+# Tool latency P95
+histogram_quantile(0.95, sum(rate(smg_mcp_tool_duration_seconds_bucket[5m])) by (le, tool))
+
+# Active MCP server connections
+smg_mcp_servers_active
+```
+
+**Alerting Rules Example:**
+
+```yaml
+groups:
+- name: sglang-gateway
+  rules:
+  - alert: HighErrorRate
+    expr: |
+      sum(rate(smg_http_responses_total{status=~"5.."}[5m]))
+      / sum(rate(smg_http_responses_total[5m])) > 0.05
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High error rate on SGLang Gateway"
+
+  - alert: CircuitBreakerOpen
+    expr: count(smg_worker_cb_state == 1) > 0
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Worker circuit breaker is open"
+
+  - alert: HighLatency
+    expr: |
+      histogram_quantile(0.99, sum(rate(smg_http_request_duration_seconds_bucket[5m])) by (le)) > 30
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "P99 latency exceeds 30 seconds"
+
+  - alert: NoHealthyWorkers
+    expr: sum(smg_worker_pool_size) == 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: "No healthy workers available"
+```
 
 ---
 
