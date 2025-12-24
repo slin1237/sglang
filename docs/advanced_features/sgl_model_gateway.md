@@ -40,15 +40,7 @@ SGLang Model Gateway is a high-performance model-routing gateway for large-scale
 13. [Service Discovery (Kubernetes)](#service-discovery-kubernetes)
 14. [History & Data Connectors](#history--data-connectors)
 15. [WASM Middleware](#wasm-middleware)
-    - [Overview](#wasm-overview)
-    - [Writing Custom Modules](#writing-custom-modules)
-    - [Example: Authentication](#example-authentication)
-    - [Example: Rate Limiting](#example-rate-limiting)
-    - [Example: Request Logging](#example-request-logging)
-    - [Deploying Modules](#deploying-modules)
 16. [Language Bindings](#language-bindings)
-    - [Python Bindings](#python-bindings)
-    - [Go Bindings](#go-bindings)
 17. [Security & Authentication](#security--authentication)
     - [TLS (HTTPS) for Gateway Server](#tls-https-for-gateway-server)
     - [mTLS for Worker Communication](#mtls-for-worker-communication)
@@ -852,109 +844,41 @@ python -m sglang_router.launch_router \
 
 The gateway supports WebAssembly (WASM) middleware modules for custom request/response processing. This enables organization-specific logic for authentication, rate limiting, billing, logging, and more—without modifying or recompiling the gateway.
 
-### WASM Overview
+### Overview
 
-WASM middleware runs in a sandboxed environment with:
-- **Memory isolation**: Modules cannot access host memory
-- **No network access**: Cannot make outbound HTTP calls
-- **No filesystem access**: Fully sandboxed execution
-- **Resource limits**: Configurable memory, CPU time, and stack size
+WASM middleware runs in a sandboxed environment with memory isolation, no network/filesystem access, and configurable resource limits.
 
-**Attach Points:**
 | Attach Point | When Executed | Use Cases |
 |--------------|---------------|-----------|
 | `OnRequest` | Before forwarding to workers | Auth, rate limiting, request modification |
 | `OnResponse` | After receiving worker response | Logging, response modification, error handling |
 
-**Actions:**
 | Action | Description |
 |--------|-------------|
 | `Continue` | Proceed without modification |
 | `Reject(status)` | Reject request with HTTP status code |
 | `Modify(...)` | Modify headers, body, or status |
 
-### Writing Custom Modules
+### Examples
 
-#### Prerequisites
+Complete working examples are available in `examples/wasm/`:
+
+| Example | Description |
+|---------|-------------|
+| `auth/` | API key authentication for protected routes |
+| `rate_limit/` | Per-client rate limiting (requests/minute) |
+| `logging/` | Request tracking headers and response modification |
+
+The WIT interface definition is located at `src/wasm/interface/spec.wit`.
+
+### Building Modules
 
 ```bash
-# Install Rust WASM target
+# Prerequisites
 rustup target add wasm32-wasip2
-
-# Install wasm-tools for component conversion
 cargo install wasm-tools
-```
 
-#### Project Setup
-
-```bash
-cargo new --lib my-middleware
-cd my-middleware
-```
-
-**Cargo.toml:**
-```toml
-[package]
-name = "my-middleware"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-wit-bindgen = { version = "0.21", features = ["macros"] }
-```
-
-#### Module Template
-
-**src/lib.rs:**
-```rust
-wit_bindgen::generate!({
-    path: "path/to/sgl-model-gateway/src/wasm/interface",
-    world: "sgl-model-gateway",
-});
-
-use exports::sgl::model_gateway::{
-    middleware_on_request::Guest as OnRequestGuest,
-    middleware_on_response::Guest as OnResponseGuest,
-};
-use sgl::model_gateway::middleware_types::{
-    Action, Request, Response, Header, ModifyAction
-};
-
-struct Middleware;
-
-impl OnRequestGuest for Middleware {
-    fn on_request(req: Request) -> Action {
-        // Access request data:
-        // - req.method, req.path, req.query
-        // - req.headers (Vec<Header>)
-        // - req.body (Vec<u8>)
-        // - req.request_id, req.now_epoch_ms
-
-        Action::Continue
-    }
-}
-
-impl OnResponseGuest for Middleware {
-    fn on_response(resp: Response) -> Action {
-        // Access response data:
-        // - resp.status (u16)
-        // - resp.headers (Vec<Header>)
-        // - resp.body (Vec<u8>)
-
-        Action::Continue
-    }
-}
-
-export!(Middleware);
-```
-
-#### Build and Package
-
-```bash
-# Build WASM module
+# Build
 cargo build --target wasm32-wasip2 --release
 
 # Convert to component format
@@ -963,164 +887,15 @@ wasm-tools component new \
   -o my_middleware.component.wasm
 ```
 
-### Example: Authentication
-
-Validate API keys and protect specific routes:
-
-```rust
-const EXPECTED_API_KEY: &str = "your-secret-api-key";
-
-impl OnRequestGuest for Middleware {
-    fn on_request(req: Request) -> Action {
-        // Only protect /api and /v1 routes
-        if !req.path.starts_with("/api") && !req.path.starts_with("/v1") {
-            return Action::Continue;
-        }
-
-        // Extract API key from headers
-        let api_key = find_header(&req.headers, "authorization")
-            .and_then(|h| h.strip_prefix("Bearer ").map(String::from))
-            .or_else(|| find_header(&req.headers, "x-api-key"));
-
-        match api_key.as_deref() {
-            Some(key) if key == EXPECTED_API_KEY => Action::Continue,
-            _ => Action::Reject(401), // 401 Unauthorized
-        }
-    }
-}
-
-fn find_header(headers: &[Header], name: &str) -> Option<String> {
-    headers.iter()
-        .find(|h| h.name.eq_ignore_ascii_case(name))
-        .map(|h| h.value.clone())
-}
-```
-
-**Testing:**
-```bash
-# Unauthorized (returns 401)
-curl http://localhost:30000/v1/chat/completions
-
-# Authorized
-curl http://localhost:30000/v1/chat/completions \
-  -H "Authorization: Bearer your-secret-api-key"
-```
-
-### Example: Rate Limiting
-
-Implement per-client rate limiting (60 requests/minute):
-
-```rust
-use std::cell::RefCell;
-
-const RATE_LIMIT: u64 = 60;
-const WINDOW_MS: u64 = 60_000;
-
-thread_local! {
-    static STATE: RefCell<Vec<(String, u64)>> = RefCell::new(Vec::new());
-}
-
-impl OnRequestGuest for Middleware {
-    fn on_request(req: Request) -> Action {
-        let client_id = get_client_id(&req);
-        let now = req.now_epoch_ms;
-
-        STATE.with(|state| {
-            let mut state = state.borrow_mut();
-
-            // Remove expired entries
-            state.retain(|(_, ts)| now - *ts < WINDOW_MS);
-
-            // Count requests from this client
-            let count = state.iter()
-                .filter(|(id, _)| id == &client_id)
-                .count() as u64;
-
-            if count >= RATE_LIMIT {
-                return Action::Reject(429); // Too Many Requests
-            }
-
-            // Record this request
-            state.push((client_id, now));
-            Action::Continue
-        })
-    }
-}
-
-fn get_client_id(req: &Request) -> String {
-    // Prefer API key, then IP, then request ID
-    find_header(&req.headers, "authorization")
-        .map(|h| format!("key:{}", h))
-        .or_else(|| find_header(&req.headers, "x-forwarded-for")
-            .map(|ip| format!("ip:{}", ip.split(',').next().unwrap_or(&ip).trim())))
-        .unwrap_or_else(|| format!("req:{}", req.request_id))
-}
-```
-
-**Note:** Rate limiting state is per-worker thread and not shared across gateway replicas. For production, consider implementing rate limiting at a shared layer (e.g., Redis).
-
-### Example: Request Logging
-
-Add tracking headers and convert error codes:
-
-```rust
-impl OnRequestGuest for Middleware {
-    fn on_request(req: Request) -> Action {
-        Action::Modify(ModifyAction {
-            status: None,
-            headers_set: vec![],
-            headers_add: vec![
-                Header {
-                    name: "x-request-id".to_string(),
-                    value: req.request_id.clone()
-                },
-                Header {
-                    name: "x-processed-at".to_string(),
-                    value: req.now_epoch_ms.to_string()
-                },
-            ],
-            headers_remove: vec![],
-            body_replace: None,
-        })
-    }
-}
-
-impl OnResponseGuest for Middleware {
-    fn on_response(resp: Response) -> Action {
-        // Convert 500 to 503 for better client handling
-        if resp.status == 500 {
-            Action::Modify(ModifyAction {
-                status: Some(503),
-                headers_set: vec![],
-                headers_add: vec![
-                    Header {
-                        name: "x-original-status".to_string(),
-                        value: "500".to_string(),
-                    },
-                ],
-                headers_remove: vec![],
-                body_replace: None,
-            })
-        } else {
-            Action::Continue
-        }
-    }
-}
-```
-
 ### Deploying Modules
 
-#### Enable WASM Support
-
 ```bash
+# Enable WASM support
 python -m sglang_router.launch_router \
   --worker-urls http://worker1:8000 \
   --enable-wasm
-```
 
-#### Upload Module
-
-```bash
+# Upload module
 curl -X POST http://localhost:30000/wasm \
   -H "Content-Type: application/json" \
   -d '{
@@ -1131,92 +906,24 @@ curl -X POST http://localhost:30000/wasm \
       "attach_points": [{"Middleware": "OnRequest"}]
     }]
   }'
-```
 
-**Response:**
-```json
-{
-  "modules": [{
-    "name": "auth-middleware",
-    "add_result": {"Success": "550e8400-e29b-41d4-a716-446655440000"}
-  }]
-}
-```
-
-#### List Modules
-
-```bash
+# List modules
 curl http://localhost:30000/wasm
+
+# Remove module
+curl -X DELETE http://localhost:30000/wasm/{module_uuid}
 ```
 
-**Response:**
-```json
-{
-  "modules": [{
-    "module_uuid": "550e8400-...",
-    "module_meta": {
-      "name": "auth-middleware",
-      "size_bytes": 45678,
-      "access_count": 1000,
-      "attach_points": [{"Middleware": "OnRequest"}]
-    }
-  }],
-  "metrics": {
-    "total_executions": 1000,
-    "successful_executions": 998,
-    "failed_executions": 2,
-    "average_execution_time_ms": 0.5
-  }
-}
-```
+### Runtime Configuration
 
-#### Remove Module
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_memory_pages` | 1024 (64MB) | Maximum WASM memory |
+| `max_execution_time_ms` | 1000 | Execution timeout |
+| `max_stack_size` | 1MB | Stack size limit |
+| `module_cache_size` | 10 | Cached modules per worker |
 
-```bash
-curl -X DELETE http://localhost:30000/wasm/550e8400-e29b-41d4-a716-446655440000
-```
-
-#### Deploy Multiple Modules
-
-Modules execute in order of registration:
-
-```bash
-curl -X POST http://localhost:30000/wasm \
-  -H "Content-Type: application/json" \
-  -d '{
-    "modules": [
-      {
-        "name": "auth",
-        "file_path": "/path/to/auth.component.wasm",
-        "module_type": "Middleware",
-        "attach_points": [{"Middleware": "OnRequest"}]
-      },
-      {
-        "name": "rate-limit",
-        "file_path": "/path/to/ratelimit.component.wasm",
-        "module_type": "Middleware",
-        "attach_points": [{"Middleware": "OnRequest"}]
-      },
-      {
-        "name": "logging",
-        "file_path": "/path/to/logging.component.wasm",
-        "module_type": "Middleware",
-        "attach_points": [{"Middleware": "OnRequest"}, {"Middleware": "OnResponse"}]
-      }
-    ]
-  }'
-```
-
-### WASM Runtime Configuration
-
-| Parameter | Default | Range | Description |
-|-----------|---------|-------|-------------|
-| `max_memory_pages` | 1024 (64MB) | 1-65536 | Maximum WASM memory |
-| `max_execution_time_ms` | 1000 | 1-300000 | Execution timeout |
-| `max_stack_size` | 1MB | 64KB-16MB | Stack size limit |
-| `thread_pool_size` | CPU count | 1-128 | Worker threads |
-| `module_cache_size` | 10 | 1-1000 | Cached modules per worker |
-| `max_body_size` | 10MB | 1B-100MB | Maximum request/response body |
+**Note:** Rate limiting state is per-worker thread and not shared across gateway replicas. For production, consider implementing rate limiting at a shared layer (e.g., Redis)
 
 ---
 
@@ -1226,159 +933,37 @@ SGLang Model Gateway provides official language bindings for Python and Go, enab
 
 ### Python Bindings
 
-The Python bindings provide a PyO3-based wrapper around the Rust gateway library, offering a Pythonic interface for launching and configuring the gateway.
+The Python bindings provide a PyO3-based wrapper around the Rust gateway library. This is a straightforward binding that calls the gateway server startup from Python.
 
 #### Installation
 
-**Development Build:**
 ```bash
-pip install maturin
-cd sgl-model-gateway/bindings/python
-maturin develop --features vendored-openssl
-```
-
-**Production Build:**
-```bash
-cd sgl-model-gateway/bindings/python
-maturin build --release --out dist --features vendored-openssl
-pip install dist/sglang_router-*.whl
-```
-
-**From PyPI:**
-```bash
+# From PyPI
 pip install sglang-router
+
+# Development build
+cd sgl-model-gateway/bindings/python
+pip install maturin && maturin develop --features vendored-openssl
 ```
 
-#### Basic Usage
+#### Usage
 
-```python
-from sglang_router import Router
-from sglang_router.router_args import RouterArgs
+The Python bindings are used throughout this documentation. See the [Quick Start](#quick-start) and [Deployment Modes](#deployment-modes) sections for detailed examples.
 
-# Create router configuration
-args = RouterArgs(
-    worker_urls=["http://worker1:8000", "http://worker2:8000"],
-    policy="cache_aware",
-    host="0.0.0.0",
-    port=30000,
-)
-
-# Start the router
-router = Router.from_args(args)
-router.start()
-```
-
-#### CLI Commands
-
-```bash
-# Launch router only
-smg launch --worker-urls http://worker1:8000 --policy cache_aware
-
-# Launch router + server (co-launch mode)
-smg server --model meta-llama/Llama-3.1-8B-Instruct --dp-size 4
-
-# Direct router launch
-python -m sglang_router.launch_router \
-  --worker-urls http://worker1:8000 http://worker2:8000 \
-  --policy cache_aware
-```
-
-#### RouterArgs Configuration
-
-The `RouterArgs` dataclass provides 50+ configuration options:
-
-```python
-from sglang_router.router_args import RouterArgs
-
-args = RouterArgs(
-    # Worker configuration
-    worker_urls=["http://worker1:8000"],
-    host="0.0.0.0",
-    port=30000,
-
-    # Routing policy
-    policy="cache_aware",  # random, round_robin, cache_aware, power_of_two, bucket
-    cache_threshold=0.3,
-    balance_abs_threshold=64,
-    balance_rel_threshold=1.5,
-
-    # Rate limiting & queuing
-    max_concurrent_requests=256,
-    queue_size=100,
-    queue_timeout_secs=60,
-    rate_limit_tokens_per_second=512,
-
-    # Health checks
-    health_check_interval_secs=30,
-    health_check_timeout_secs=10,
-    health_failure_threshold=3,
-
-    # Circuit breaker
-    cb_failure_threshold=10,
-    cb_success_threshold=3,
-    cb_timeout_duration_secs=60,
-
-    # Tokenizer
-    model_path="meta-llama/Llama-3.1-8B-Instruct",
-    tokenizer_cache_enable_l0=True,
-    tokenizer_cache_l0_max_entries=10000,
-
-    # Parsers
-    tool_call_parser="json",
-    reasoning_parser="deepseek-r1",
-
-    # TLS/mTLS
-    server_cert_path="/path/to/server.crt",
-    server_key_path="/path/to/server.key",
-    client_cert_path="/path/to/client.crt",
-    client_key_path="/path/to/client.key",
-    ca_cert_paths=["/path/to/ca.crt"],
-
-    # Observability
-    prometheus_port=29000,
-    enable_trace=True,
-    otlp_traces_endpoint="localhost:4317",
-
-    # History backend
-    history_backend="memory",  # memory, none, oracle, postgres
-)
-```
-
-#### PD Disaggregation Mode
-
-```python
-args = RouterArgs(
-    pd_disaggregation=True,
-    prefill_urls=[("http://prefill1:30001", 9001)],  # (url, bootstrap_port)
-    decode_urls=["http://decode1:30011"],
-    prefill_policy="cache_aware",
-    decode_policy="power_of_two",
-)
-```
-
-#### Kubernetes Service Discovery
-
-```python
-args = RouterArgs(
-    service_discovery=True,
-    selector={"app": "sglang-worker", "component": "inference"},
-    service_discovery_namespace="production",
-    service_discovery_port=8000,
-)
-```
+Key components:
+- `RouterArgs` dataclass with 50+ configuration options
+- `Router.from_args()` for programmatic startup
+- CLI commands: `smg launch`, `smg server`, `python -m sglang_router.launch_router`
 
 ### Go Bindings
 
-The Go bindings provide a high-performance gRPC client library for organizations that prefer Go or need to integrate with existing Go-based infrastructure. This is ideal for:
+The Go bindings provide a high-performance gRPC client library for organizations with Go-based infrastructure. This is ideal for:
 
 - Integration with internal Go services and tooling
-- High-performance client applications requiring fine-grained control
-- Organizations with existing Go microservice architectures
-- Custom server implementations (e.g., OpenAI-compatible proxies)
+- High-performance client applications
+- Building custom OpenAI-compatible proxy servers
 
 #### Architecture
-
-The Go bindings use a two-layer architecture:
 
 ```
 ┌─────────────────────────────────────────┐
@@ -1386,7 +971,6 @@ The Go bindings use a two-layer architecture:
 │   (client.go - OpenAI-style interface)  │
 ├─────────────────────────────────────────┤
 │         gRPC Layer                      │
-│   (internal/grpc/client_grpc.go)        │
 ├─────────────────────────────────────────┤
 │         Rust FFI Layer                  │
 │   (Tokenization, Parsing, Conversion)   │
@@ -1402,248 +986,31 @@ The Go bindings use a two-layer architecture:
 #### Installation
 
 ```bash
+# Build the FFI library first
+cd sgl-model-gateway/bindings/golang
+make build && make lib
+
+# Then use in your Go project
 go get github.com/sgl-project/sgl-go-sdk
 ```
 
-**Build Requirements:**
-- Go 1.24+
-- Rust toolchain
-- The Rust FFI library must be built first
+**Requirements:** Go 1.24+, Rust toolchain
 
-**Build the FFI Library:**
+#### Examples
+
+Complete working examples are available in `bindings/golang/examples/`:
+
+| Example | Description |
+|---------|-------------|
+| `simple/` | Non-streaming chat completion |
+| `streaming/` | Streaming chat completion with SSE |
+| `oai_server/` | Full OpenAI-compatible HTTP server |
+
 ```bash
-cd sgl-model-gateway/bindings/golang
-make build      # Release build
-make lib        # Copy library to ./lib
-```
-
-#### Basic Usage
-
-**Non-Streaming:**
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-
-    sglang "github.com/sgl-project/sgl-go-sdk"
-)
-
-func main() {
-    // Create client
-    client, err := sglang.NewClient(sglang.ClientConfig{
-        Endpoint:      "grpc://localhost:20000",
-        TokenizerPath: "/path/to/tokenizer",
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer client.Close()
-
-    // Create completion
-    resp, err := client.CreateChatCompletion(context.Background(), sglang.ChatCompletionRequest{
-        Model: "default",
-        Messages: []sglang.ChatMessage{
-            {Role: "user", Content: "Hello!"},
-        },
-        Temperature: float32Ptr(0.7),
-        MaxCompletionTokens: intPtr(200),
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(resp.Choices[0].Message.Content)
-    fmt.Printf("Usage: %d prompt + %d completion = %d total tokens\n",
-        resp.Usage.PromptTokens,
-        resp.Usage.CompletionTokens,
-        resp.Usage.TotalTokens)
-}
-
-func float32Ptr(f float32) *float32 { return &f }
-func intPtr(i int) *int { return &i }
-```
-
-**Streaming:**
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "io"
-    "log"
-
-    sglang "github.com/sgl-project/sgl-go-sdk"
-)
-
-func main() {
-    client, err := sglang.NewClient(sglang.ClientConfig{
-        Endpoint:      "grpc://localhost:20000",
-        TokenizerPath: "/path/to/tokenizer",
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer client.Close()
-
-    // Create streaming completion
-    stream, err := client.CreateChatCompletionStream(context.Background(), sglang.ChatCompletionRequest{
-        Model: "default",
-        Messages: []sglang.ChatMessage{
-            {Role: "user", Content: "Write a short poem about coding"},
-        },
-        Stream:              true,
-        MaxCompletionTokens: intPtr(500),
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer stream.Close()
-
-    // Read streaming response
-    for {
-        chunk, err := stream.Recv()
-        if err == io.EOF {
-            break
-        }
-        if err != nil {
-            log.Fatal(err)
-        }
-
-        for _, choice := range chunk.Choices {
-            if choice.Delta.Content != "" {
-                fmt.Print(choice.Delta.Content)
-            }
-        }
-    }
-    fmt.Println()
-}
-```
-
-#### Client Configuration
-
-```go
-config := sglang.ClientConfig{
-    // Required
-    Endpoint:      "grpc://localhost:20000",
-    TokenizerPath: "/path/to/tokenizer",
-
-    // Optional: Buffer sizes for high concurrency
-    ChannelBufferSizes: &sglang.ChannelBufferSizes{
-        ResultJSONChan: 10000,  // JSON result channel
-        ErrChan:        100,    // Error channel
-        RecvChan:       2000,   // gRPC receive channel
-    },
-
-    // Optional: Timeouts
-    Timeouts: &sglang.Timeouts{
-        KeepaliveTime:    300 * time.Second,
-        KeepaliveTimeout: 20 * time.Second,
-        CloseTimeout:     5 * time.Second,
-    },
-}
-```
-
-#### Chat Completion Request Options
-
-```go
-req := sglang.ChatCompletionRequest{
-    Model: "default",
-    Messages: []sglang.ChatMessage{
-        {Role: "system", Content: "You are a helpful assistant."},
-        {Role: "user", Content: "Hello!"},
-    },
-
-    // Sampling parameters
-    Temperature:     float32Ptr(0.7),
-    TopP:            float32Ptr(0.9),
-    TopK:            intPtr(50),
-
-    // Length control
-    MaxCompletionTokens: intPtr(1000),
-    Stop:                []string{"\n\n"},
-    StopTokenIDs:        []int{128009},
-
-    // Penalties
-    FrequencyPenalty: float32Ptr(0.0),
-    PresencePenalty:  float32Ptr(0.0),
-
-    // Tool calling
-    Tools: []sglang.Tool{
-        {
-            Type: "function",
-            Function: sglang.Function{
-                Name:        "get_weather",
-                Description: "Get current weather",
-                Parameters: map[string]interface{}{
-                    "type": "object",
-                    "properties": map[string]interface{}{
-                        "location": map[string]interface{}{
-                            "type":        "string",
-                            "description": "City name",
-                        },
-                    },
-                    "required": []string{"location"},
-                },
-            },
-        },
-    },
-    ToolChoice: "auto",
-
-    // Response format
-    ResponseFormat: &sglang.ResponseFormat{Type: "json_object"},
-
-    // Advanced
-    Seed:            intPtr(42),
-    Logprobs:        true,
-    TopLogprobs:     intPtr(5),
-    SkipSpecialTokens: true,
-}
-```
-
-#### Building an OpenAI-Compatible Server
-
-The Go bindings include a complete example of an OpenAI-compatible server in `examples/oai_server/`:
-
-```go
-// Simplified example - see examples/oai_server for full implementation
-package main
-
-import (
-    "github.com/valyala/fasthttp"
-    sglang "github.com/sgl-project/sgl-go-sdk"
-)
-
-func main() {
-    client, _ := sglang.NewClient(sglang.ClientConfig{
-        Endpoint:      "grpc://localhost:20000",
-        TokenizerPath: "/path/to/tokenizer",
-    })
-
-    handler := func(ctx *fasthttp.RequestCtx) {
-        switch string(ctx.Path()) {
-        case "/v1/chat/completions":
-            handleChatCompletion(ctx, client)
-        case "/v1/models":
-            handleModels(ctx)
-        case "/health":
-            ctx.SetStatusCode(200)
-        }
-    }
-
-    fasthttp.ListenAndServe(":8080", handler)
-}
-```
-
-**Run the example server:**
-```bash
-cd sgl-model-gateway/bindings/golang/examples/oai_server
-./run.sh
+# Run examples
+cd sgl-model-gateway/bindings/golang/examples/simple && ./run.sh
+cd sgl-model-gateway/bindings/golang/examples/streaming && ./run.sh
+cd sgl-model-gateway/bindings/golang/examples/oai_server && ./run.sh
 ```
 
 #### Testing
@@ -1654,42 +1021,24 @@ cd sgl-model-gateway/bindings/golang
 # Unit tests
 go test -v ./...
 
-# With race detector
-go test -race ./...
-
 # Integration tests (requires running SGLang server)
 export SGL_GRPC_ENDPOINT=grpc://localhost:20000
 export SGL_TOKENIZER_PATH=/path/to/tokenizer
 go test -tags=integration -v ./...
 ```
 
-### Binding Comparison
+### Comparison
 
 | Feature | Python | Go |
 |---------|--------|-----|
 | **Primary Use** | Gateway server launcher | gRPC client library |
-| **Language** | Python + PyO3 Rust | Go + Rust FFI |
-| **Architecture** | High-level router configuration | Two-layer (Go API + FFI) |
-| **API Style** | Dataclass-based configuration | OpenAI SDK-style interface |
-| **Concurrency** | Async Rust runtime | Goroutines + channels |
-| **Configuration** | 50+ RouterArgs fields | ClientConfig + Request options |
 | **CLI Support** | Full CLI (smg, sglang-router) | Library only |
 | **K8s Discovery** | Native support | N/A (client library) |
 | **PD Mode** | Built-in | N/A (client library) |
-| **Streaming** | Via HTTP/gRPC endpoints | Native Go streaming |
-| **Tool Calling** | Server-side parsing | Client-side parsing |
 
-**When to Use Python:**
-- Launching and managing the gateway server
-- Quick prototyping and testing
-- Integration with Python ML pipelines
-- Using service discovery and PD disaggregation
+**When to Use Python:** Launching and managing the gateway server, service discovery, PD disaggregation.
 
-**When to Use Go:**
-- Building custom client applications
-- Integration with Go microservices
-- High-performance client implementations
-- Building OpenAI-compatible proxy servers
+**When to Use Go:** Building custom client applications, integration with Go microservices, OpenAI-compatible proxy servers
 
 ---
 
