@@ -46,21 +46,24 @@ SGLang Model Gateway is a high-performance model-routing gateway for large-scale
     - [Example: Rate Limiting](#example-rate-limiting)
     - [Example: Request Logging](#example-request-logging)
     - [Deploying Modules](#deploying-modules)
-16. [Security & Authentication](#security--authentication)
+16. [Language Bindings](#language-bindings)
+    - [Python Bindings](#python-bindings)
+    - [Go Bindings](#go-bindings)
+17. [Security & Authentication](#security--authentication)
     - [TLS (HTTPS) for Gateway Server](#tls-https-for-gateway-server)
     - [mTLS for Worker Communication](#mtls-for-worker-communication)
-17. [Observability](#observability)
+18. [Observability](#observability)
     - [Prometheus Metrics](#prometheus-metrics)
     - [OpenTelemetry Tracing](#opentelemetry-tracing)
     - [Logging](#logging)
-18. [Production Recommendations](#production-recommendations)
+19. [Production Recommendations](#production-recommendations)
     - [Security](#security-1)
     - [High Availability](#high-availability)
     - [Performance](#performance)
     - [Kubernetes Deployment](#kubernetes-deployment)
     - [Monitoring with PromQL](#monitoring-with-promql)
-19. [Configuration Reference](#configuration-reference)
-20. [Troubleshooting](#troubleshooting)
+20. [Configuration Reference](#configuration-reference)
+21. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -1214,6 +1217,479 @@ curl -X POST http://localhost:30000/wasm \
 | `thread_pool_size` | CPU count | 1-128 | Worker threads |
 | `module_cache_size` | 10 | 1-1000 | Cached modules per worker |
 | `max_body_size` | 10MB | 1B-100MB | Maximum request/response body |
+
+---
+
+## Language Bindings
+
+SGLang Model Gateway provides official language bindings for Python and Go, enabling integration with different technology stacks and organizational requirements.
+
+### Python Bindings
+
+The Python bindings provide a PyO3-based wrapper around the Rust gateway library, offering a Pythonic interface for launching and configuring the gateway.
+
+#### Installation
+
+**Development Build:**
+```bash
+pip install maturin
+cd sgl-model-gateway/bindings/python
+maturin develop --features vendored-openssl
+```
+
+**Production Build:**
+```bash
+cd sgl-model-gateway/bindings/python
+maturin build --release --out dist --features vendored-openssl
+pip install dist/sglang_router-*.whl
+```
+
+**From PyPI:**
+```bash
+pip install sglang-router
+```
+
+#### Basic Usage
+
+```python
+from sglang_router import Router
+from sglang_router.router_args import RouterArgs
+
+# Create router configuration
+args = RouterArgs(
+    worker_urls=["http://worker1:8000", "http://worker2:8000"],
+    policy="cache_aware",
+    host="0.0.0.0",
+    port=30000,
+)
+
+# Start the router
+router = Router.from_args(args)
+router.start()
+```
+
+#### CLI Commands
+
+```bash
+# Launch router only
+smg launch --worker-urls http://worker1:8000 --policy cache_aware
+
+# Launch router + server (co-launch mode)
+smg server --model meta-llama/Llama-3.1-8B-Instruct --dp-size 4
+
+# Direct router launch
+python -m sglang_router.launch_router \
+  --worker-urls http://worker1:8000 http://worker2:8000 \
+  --policy cache_aware
+```
+
+#### RouterArgs Configuration
+
+The `RouterArgs` dataclass provides 50+ configuration options:
+
+```python
+from sglang_router.router_args import RouterArgs
+
+args = RouterArgs(
+    # Worker configuration
+    worker_urls=["http://worker1:8000"],
+    host="0.0.0.0",
+    port=30000,
+
+    # Routing policy
+    policy="cache_aware",  # random, round_robin, cache_aware, power_of_two, bucket
+    cache_threshold=0.3,
+    balance_abs_threshold=64,
+    balance_rel_threshold=1.5,
+
+    # Rate limiting & queuing
+    max_concurrent_requests=256,
+    queue_size=100,
+    queue_timeout_secs=60,
+    rate_limit_tokens_per_second=512,
+
+    # Health checks
+    health_check_interval_secs=30,
+    health_check_timeout_secs=10,
+    health_failure_threshold=3,
+
+    # Circuit breaker
+    cb_failure_threshold=10,
+    cb_success_threshold=3,
+    cb_timeout_duration_secs=60,
+
+    # Tokenizer
+    model_path="meta-llama/Llama-3.1-8B-Instruct",
+    tokenizer_cache_enable_l0=True,
+    tokenizer_cache_l0_max_entries=10000,
+
+    # Parsers
+    tool_call_parser="json",
+    reasoning_parser="deepseek-r1",
+
+    # TLS/mTLS
+    server_cert_path="/path/to/server.crt",
+    server_key_path="/path/to/server.key",
+    client_cert_path="/path/to/client.crt",
+    client_key_path="/path/to/client.key",
+    ca_cert_paths=["/path/to/ca.crt"],
+
+    # Observability
+    prometheus_port=29000,
+    enable_trace=True,
+    otlp_traces_endpoint="localhost:4317",
+
+    # History backend
+    history_backend="memory",  # memory, none, oracle, postgres
+)
+```
+
+#### PD Disaggregation Mode
+
+```python
+args = RouterArgs(
+    pd_disaggregation=True,
+    prefill_urls=[("http://prefill1:30001", 9001)],  # (url, bootstrap_port)
+    decode_urls=["http://decode1:30011"],
+    prefill_policy="cache_aware",
+    decode_policy="power_of_two",
+)
+```
+
+#### Kubernetes Service Discovery
+
+```python
+args = RouterArgs(
+    service_discovery=True,
+    selector={"app": "sglang-worker", "component": "inference"},
+    service_discovery_namespace="production",
+    service_discovery_port=8000,
+)
+```
+
+### Go Bindings
+
+The Go bindings provide a high-performance gRPC client library for organizations that prefer Go or need to integrate with existing Go-based infrastructure. This is ideal for:
+
+- Integration with internal Go services and tooling
+- High-performance client applications requiring fine-grained control
+- Organizations with existing Go microservice architectures
+- Custom server implementations (e.g., OpenAI-compatible proxies)
+
+#### Architecture
+
+The Go bindings use a two-layer architecture:
+
+```
+┌─────────────────────────────────────────┐
+│         High-Level Go API               │
+│   (client.go - OpenAI-style interface)  │
+├─────────────────────────────────────────┤
+│         gRPC Layer                      │
+│   (internal/grpc/client_grpc.go)        │
+├─────────────────────────────────────────┤
+│         Rust FFI Layer                  │
+│   (Tokenization, Parsing, Conversion)   │
+└─────────────────────────────────────────┘
+```
+
+**Key Features:**
+- Native Rust tokenization via FFI (thread-safe, lock-free)
+- Full streaming support with context cancellation
+- Configurable channel buffer sizes for high concurrency
+- Built-in tool call parsing and chat template application
+
+#### Installation
+
+```bash
+go get github.com/sgl-project/sgl-go-sdk
+```
+
+**Build Requirements:**
+- Go 1.24+
+- Rust toolchain
+- The Rust FFI library must be built first
+
+**Build the FFI Library:**
+```bash
+cd sgl-model-gateway/bindings/golang
+make build      # Release build
+make lib        # Copy library to ./lib
+```
+
+#### Basic Usage
+
+**Non-Streaming:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    sglang "github.com/sgl-project/sgl-go-sdk"
+)
+
+func main() {
+    // Create client
+    client, err := sglang.NewClient(sglang.ClientConfig{
+        Endpoint:      "grpc://localhost:20000",
+        TokenizerPath: "/path/to/tokenizer",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    // Create completion
+    resp, err := client.CreateChatCompletion(context.Background(), sglang.ChatCompletionRequest{
+        Model: "default",
+        Messages: []sglang.ChatMessage{
+            {Role: "user", Content: "Hello!"},
+        },
+        Temperature: float32Ptr(0.7),
+        MaxCompletionTokens: intPtr(200),
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(resp.Choices[0].Message.Content)
+    fmt.Printf("Usage: %d prompt + %d completion = %d total tokens\n",
+        resp.Usage.PromptTokens,
+        resp.Usage.CompletionTokens,
+        resp.Usage.TotalTokens)
+}
+
+func float32Ptr(f float32) *float32 { return &f }
+func intPtr(i int) *int { return &i }
+```
+
+**Streaming:**
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "io"
+    "log"
+
+    sglang "github.com/sgl-project/sgl-go-sdk"
+)
+
+func main() {
+    client, err := sglang.NewClient(sglang.ClientConfig{
+        Endpoint:      "grpc://localhost:20000",
+        TokenizerPath: "/path/to/tokenizer",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    // Create streaming completion
+    stream, err := client.CreateChatCompletionStream(context.Background(), sglang.ChatCompletionRequest{
+        Model: "default",
+        Messages: []sglang.ChatMessage{
+            {Role: "user", Content: "Write a short poem about coding"},
+        },
+        Stream:              true,
+        MaxCompletionTokens: intPtr(500),
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer stream.Close()
+
+    // Read streaming response
+    for {
+        chunk, err := stream.Recv()
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        for _, choice := range chunk.Choices {
+            if choice.Delta.Content != "" {
+                fmt.Print(choice.Delta.Content)
+            }
+        }
+    }
+    fmt.Println()
+}
+```
+
+#### Client Configuration
+
+```go
+config := sglang.ClientConfig{
+    // Required
+    Endpoint:      "grpc://localhost:20000",
+    TokenizerPath: "/path/to/tokenizer",
+
+    // Optional: Buffer sizes for high concurrency
+    ChannelBufferSizes: &sglang.ChannelBufferSizes{
+        ResultJSONChan: 10000,  // JSON result channel
+        ErrChan:        100,    // Error channel
+        RecvChan:       2000,   // gRPC receive channel
+    },
+
+    // Optional: Timeouts
+    Timeouts: &sglang.Timeouts{
+        KeepaliveTime:    300 * time.Second,
+        KeepaliveTimeout: 20 * time.Second,
+        CloseTimeout:     5 * time.Second,
+    },
+}
+```
+
+#### Chat Completion Request Options
+
+```go
+req := sglang.ChatCompletionRequest{
+    Model: "default",
+    Messages: []sglang.ChatMessage{
+        {Role: "system", Content: "You are a helpful assistant."},
+        {Role: "user", Content: "Hello!"},
+    },
+
+    // Sampling parameters
+    Temperature:     float32Ptr(0.7),
+    TopP:            float32Ptr(0.9),
+    TopK:            intPtr(50),
+
+    // Length control
+    MaxCompletionTokens: intPtr(1000),
+    Stop:                []string{"\n\n"},
+    StopTokenIDs:        []int{128009},
+
+    // Penalties
+    FrequencyPenalty: float32Ptr(0.0),
+    PresencePenalty:  float32Ptr(0.0),
+
+    // Tool calling
+    Tools: []sglang.Tool{
+        {
+            Type: "function",
+            Function: sglang.Function{
+                Name:        "get_weather",
+                Description: "Get current weather",
+                Parameters: map[string]interface{}{
+                    "type": "object",
+                    "properties": map[string]interface{}{
+                        "location": map[string]interface{}{
+                            "type":        "string",
+                            "description": "City name",
+                        },
+                    },
+                    "required": []string{"location"},
+                },
+            },
+        },
+    },
+    ToolChoice: "auto",
+
+    // Response format
+    ResponseFormat: &sglang.ResponseFormat{Type: "json_object"},
+
+    // Advanced
+    Seed:            intPtr(42),
+    Logprobs:        true,
+    TopLogprobs:     intPtr(5),
+    SkipSpecialTokens: true,
+}
+```
+
+#### Building an OpenAI-Compatible Server
+
+The Go bindings include a complete example of an OpenAI-compatible server in `examples/oai_server/`:
+
+```go
+// Simplified example - see examples/oai_server for full implementation
+package main
+
+import (
+    "github.com/valyala/fasthttp"
+    sglang "github.com/sgl-project/sgl-go-sdk"
+)
+
+func main() {
+    client, _ := sglang.NewClient(sglang.ClientConfig{
+        Endpoint:      "grpc://localhost:20000",
+        TokenizerPath: "/path/to/tokenizer",
+    })
+
+    handler := func(ctx *fasthttp.RequestCtx) {
+        switch string(ctx.Path()) {
+        case "/v1/chat/completions":
+            handleChatCompletion(ctx, client)
+        case "/v1/models":
+            handleModels(ctx)
+        case "/health":
+            ctx.SetStatusCode(200)
+        }
+    }
+
+    fasthttp.ListenAndServe(":8080", handler)
+}
+```
+
+**Run the example server:**
+```bash
+cd sgl-model-gateway/bindings/golang/examples/oai_server
+./run.sh
+```
+
+#### Testing
+
+```bash
+cd sgl-model-gateway/bindings/golang
+
+# Unit tests
+go test -v ./...
+
+# With race detector
+go test -race ./...
+
+# Integration tests (requires running SGLang server)
+export SGL_GRPC_ENDPOINT=grpc://localhost:20000
+export SGL_TOKENIZER_PATH=/path/to/tokenizer
+go test -tags=integration -v ./...
+```
+
+### Binding Comparison
+
+| Feature | Python | Go |
+|---------|--------|-----|
+| **Primary Use** | Gateway server launcher | gRPC client library |
+| **Language** | Python + PyO3 Rust | Go + Rust FFI |
+| **Architecture** | High-level router configuration | Two-layer (Go API + FFI) |
+| **API Style** | Dataclass-based configuration | OpenAI SDK-style interface |
+| **Concurrency** | Async Rust runtime | Goroutines + channels |
+| **Configuration** | 50+ RouterArgs fields | ClientConfig + Request options |
+| **CLI Support** | Full CLI (smg, sglang-router) | Library only |
+| **K8s Discovery** | Native support | N/A (client library) |
+| **PD Mode** | Built-in | N/A (client library) |
+| **Streaming** | Via HTTP/gRPC endpoints | Native Go streaming |
+| **Tool Calling** | Server-side parsing | Client-side parsing |
+
+**When to Use Python:**
+- Launching and managing the gateway server
+- Quick prototyping and testing
+- Integration with Python ML pipelines
+- Using service discovery and PD disaggregation
+
+**When to Use Go:**
+- Building custom client applications
+- Integration with Go microservices
+- High-performance client implementations
+- Building OpenAI-compatible proxy servers
 
 ---
 
