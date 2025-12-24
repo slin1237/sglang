@@ -39,21 +39,28 @@ SGLang Model Gateway is a high-performance model-routing gateway for large-scale
 12. [MCP Integration](#mcp-integration)
 13. [Service Discovery (Kubernetes)](#service-discovery-kubernetes)
 14. [History & Data Connectors](#history--data-connectors)
-15. [Security & Authentication](#security--authentication)
+15. [WASM Middleware](#wasm-middleware)
+    - [Overview](#wasm-overview)
+    - [Writing Custom Modules](#writing-custom-modules)
+    - [Example: Authentication](#example-authentication)
+    - [Example: Rate Limiting](#example-rate-limiting)
+    - [Example: Request Logging](#example-request-logging)
+    - [Deploying Modules](#deploying-modules)
+16. [Security & Authentication](#security--authentication)
     - [TLS (HTTPS) for Gateway Server](#tls-https-for-gateway-server)
     - [mTLS for Worker Communication](#mtls-for-worker-communication)
-16. [Observability](#observability)
+17. [Observability](#observability)
     - [Prometheus Metrics](#prometheus-metrics)
     - [OpenTelemetry Tracing](#opentelemetry-tracing)
     - [Logging](#logging)
-17. [Production Recommendations](#production-recommendations)
+18. [Production Recommendations](#production-recommendations)
     - [Security](#security-1)
     - [High Availability](#high-availability)
     - [Performance](#performance)
     - [Kubernetes Deployment](#kubernetes-deployment)
     - [Monitoring with PromQL](#monitoring-with-promql)
-18. [Configuration Reference](#configuration-reference)
-19. [Troubleshooting](#troubleshooting)
+19. [Configuration Reference](#configuration-reference)
+20. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -835,6 +842,378 @@ python -m sglang_router.launch_router \
   --worker-urls https://api.openai.com \
   --history-backend postgres
 ```
+
+---
+
+## WASM Middleware
+
+The gateway supports WebAssembly (WASM) middleware modules for custom request/response processing. This enables organization-specific logic for authentication, rate limiting, billing, logging, and more—without modifying or recompiling the gateway.
+
+### WASM Overview
+
+WASM middleware runs in a sandboxed environment with:
+- **Memory isolation**: Modules cannot access host memory
+- **No network access**: Cannot make outbound HTTP calls
+- **No filesystem access**: Fully sandboxed execution
+- **Resource limits**: Configurable memory, CPU time, and stack size
+
+**Attach Points:**
+| Attach Point | When Executed | Use Cases |
+|--------------|---------------|-----------|
+| `OnRequest` | Before forwarding to workers | Auth, rate limiting, request modification |
+| `OnResponse` | After receiving worker response | Logging, response modification, error handling |
+
+**Actions:**
+| Action | Description |
+|--------|-------------|
+| `Continue` | Proceed without modification |
+| `Reject(status)` | Reject request with HTTP status code |
+| `Modify(...)` | Modify headers, body, or status |
+
+### Writing Custom Modules
+
+#### Prerequisites
+
+```bash
+# Install Rust WASM target
+rustup target add wasm32-wasip2
+
+# Install wasm-tools for component conversion
+cargo install wasm-tools
+```
+
+#### Project Setup
+
+```bash
+cargo new --lib my-middleware
+cd my-middleware
+```
+
+**Cargo.toml:**
+```toml
+[package]
+name = "my-middleware"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.21", features = ["macros"] }
+```
+
+#### Module Template
+
+**src/lib.rs:**
+```rust
+wit_bindgen::generate!({
+    path: "path/to/sgl-model-gateway/src/wasm/interface",
+    world: "sgl-model-gateway",
+});
+
+use exports::sgl::model_gateway::{
+    middleware_on_request::Guest as OnRequestGuest,
+    middleware_on_response::Guest as OnResponseGuest,
+};
+use sgl::model_gateway::middleware_types::{
+    Action, Request, Response, Header, ModifyAction
+};
+
+struct Middleware;
+
+impl OnRequestGuest for Middleware {
+    fn on_request(req: Request) -> Action {
+        // Access request data:
+        // - req.method, req.path, req.query
+        // - req.headers (Vec<Header>)
+        // - req.body (Vec<u8>)
+        // - req.request_id, req.now_epoch_ms
+
+        Action::Continue
+    }
+}
+
+impl OnResponseGuest for Middleware {
+    fn on_response(resp: Response) -> Action {
+        // Access response data:
+        // - resp.status (u16)
+        // - resp.headers (Vec<Header>)
+        // - resp.body (Vec<u8>)
+
+        Action::Continue
+    }
+}
+
+export!(Middleware);
+```
+
+#### Build and Package
+
+```bash
+# Build WASM module
+cargo build --target wasm32-wasip2 --release
+
+# Convert to component format
+wasm-tools component new \
+  target/wasm32-wasip2/release/my_middleware.wasm \
+  -o my_middleware.component.wasm
+```
+
+### Example: Authentication
+
+Validate API keys and protect specific routes:
+
+```rust
+const EXPECTED_API_KEY: &str = "your-secret-api-key";
+
+impl OnRequestGuest for Middleware {
+    fn on_request(req: Request) -> Action {
+        // Only protect /api and /v1 routes
+        if !req.path.starts_with("/api") && !req.path.starts_with("/v1") {
+            return Action::Continue;
+        }
+
+        // Extract API key from headers
+        let api_key = find_header(&req.headers, "authorization")
+            .and_then(|h| h.strip_prefix("Bearer ").map(String::from))
+            .or_else(|| find_header(&req.headers, "x-api-key"));
+
+        match api_key.as_deref() {
+            Some(key) if key == EXPECTED_API_KEY => Action::Continue,
+            _ => Action::Reject(401), // 401 Unauthorized
+        }
+    }
+}
+
+fn find_header(headers: &[Header], name: &str) -> Option<String> {
+    headers.iter()
+        .find(|h| h.name.eq_ignore_ascii_case(name))
+        .map(|h| h.value.clone())
+}
+```
+
+**Testing:**
+```bash
+# Unauthorized (returns 401)
+curl http://localhost:30000/v1/chat/completions
+
+# Authorized
+curl http://localhost:30000/v1/chat/completions \
+  -H "Authorization: Bearer your-secret-api-key"
+```
+
+### Example: Rate Limiting
+
+Implement per-client rate limiting (60 requests/minute):
+
+```rust
+use std::cell::RefCell;
+
+const RATE_LIMIT: u64 = 60;
+const WINDOW_MS: u64 = 60_000;
+
+thread_local! {
+    static STATE: RefCell<Vec<(String, u64)>> = RefCell::new(Vec::new());
+}
+
+impl OnRequestGuest for Middleware {
+    fn on_request(req: Request) -> Action {
+        let client_id = get_client_id(&req);
+        let now = req.now_epoch_ms;
+
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+
+            // Remove expired entries
+            state.retain(|(_, ts)| now - *ts < WINDOW_MS);
+
+            // Count requests from this client
+            let count = state.iter()
+                .filter(|(id, _)| id == &client_id)
+                .count() as u64;
+
+            if count >= RATE_LIMIT {
+                return Action::Reject(429); // Too Many Requests
+            }
+
+            // Record this request
+            state.push((client_id, now));
+            Action::Continue
+        })
+    }
+}
+
+fn get_client_id(req: &Request) -> String {
+    // Prefer API key, then IP, then request ID
+    find_header(&req.headers, "authorization")
+        .map(|h| format!("key:{}", h))
+        .or_else(|| find_header(&req.headers, "x-forwarded-for")
+            .map(|ip| format!("ip:{}", ip.split(',').next().unwrap_or(&ip).trim())))
+        .unwrap_or_else(|| format!("req:{}", req.request_id))
+}
+```
+
+**Note:** Rate limiting state is per-worker thread and not shared across gateway replicas. For production, consider implementing rate limiting at a shared layer (e.g., Redis).
+
+### Example: Request Logging
+
+Add tracking headers and convert error codes:
+
+```rust
+impl OnRequestGuest for Middleware {
+    fn on_request(req: Request) -> Action {
+        Action::Modify(ModifyAction {
+            status: None,
+            headers_set: vec![],
+            headers_add: vec![
+                Header {
+                    name: "x-request-id".to_string(),
+                    value: req.request_id.clone()
+                },
+                Header {
+                    name: "x-processed-at".to_string(),
+                    value: req.now_epoch_ms.to_string()
+                },
+            ],
+            headers_remove: vec![],
+            body_replace: None,
+        })
+    }
+}
+
+impl OnResponseGuest for Middleware {
+    fn on_response(resp: Response) -> Action {
+        // Convert 500 to 503 for better client handling
+        if resp.status == 500 {
+            Action::Modify(ModifyAction {
+                status: Some(503),
+                headers_set: vec![],
+                headers_add: vec![
+                    Header {
+                        name: "x-original-status".to_string(),
+                        value: "500".to_string(),
+                    },
+                ],
+                headers_remove: vec![],
+                body_replace: None,
+            })
+        } else {
+            Action::Continue
+        }
+    }
+}
+```
+
+### Deploying Modules
+
+#### Enable WASM Support
+
+```bash
+python -m sglang_router.launch_router \
+  --worker-urls http://worker1:8000 \
+  --enable-wasm
+```
+
+#### Upload Module
+
+```bash
+curl -X POST http://localhost:30000/wasm \
+  -H "Content-Type: application/json" \
+  -d '{
+    "modules": [{
+      "name": "auth-middleware",
+      "file_path": "/absolute/path/to/auth.component.wasm",
+      "module_type": "Middleware",
+      "attach_points": [{"Middleware": "OnRequest"}]
+    }]
+  }'
+```
+
+**Response:**
+```json
+{
+  "modules": [{
+    "name": "auth-middleware",
+    "add_result": {"Success": "550e8400-e29b-41d4-a716-446655440000"}
+  }]
+}
+```
+
+#### List Modules
+
+```bash
+curl http://localhost:30000/wasm
+```
+
+**Response:**
+```json
+{
+  "modules": [{
+    "module_uuid": "550e8400-...",
+    "module_meta": {
+      "name": "auth-middleware",
+      "size_bytes": 45678,
+      "access_count": 1000,
+      "attach_points": [{"Middleware": "OnRequest"}]
+    }
+  }],
+  "metrics": {
+    "total_executions": 1000,
+    "successful_executions": 998,
+    "failed_executions": 2,
+    "average_execution_time_ms": 0.5
+  }
+}
+```
+
+#### Remove Module
+
+```bash
+curl -X DELETE http://localhost:30000/wasm/550e8400-e29b-41d4-a716-446655440000
+```
+
+#### Deploy Multiple Modules
+
+Modules execute in order of registration:
+
+```bash
+curl -X POST http://localhost:30000/wasm \
+  -H "Content-Type: application/json" \
+  -d '{
+    "modules": [
+      {
+        "name": "auth",
+        "file_path": "/path/to/auth.component.wasm",
+        "module_type": "Middleware",
+        "attach_points": [{"Middleware": "OnRequest"}]
+      },
+      {
+        "name": "rate-limit",
+        "file_path": "/path/to/ratelimit.component.wasm",
+        "module_type": "Middleware",
+        "attach_points": [{"Middleware": "OnRequest"}]
+      },
+      {
+        "name": "logging",
+        "file_path": "/path/to/logging.component.wasm",
+        "module_type": "Middleware",
+        "attach_points": [{"Middleware": "OnRequest"}, {"Middleware": "OnResponse"}]
+      }
+    ]
+  }'
+```
+
+### WASM Runtime Configuration
+
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| `max_memory_pages` | 1024 (64MB) | 1-65536 | Maximum WASM memory |
+| `max_execution_time_ms` | 1000 | 1-300000 | Execution timeout |
+| `max_stack_size` | 1MB | 64KB-16MB | Stack size limit |
+| `thread_pool_size` | CPU count | 1-128 | Worker threads |
+| `module_cache_size` | 10 | 1-1000 | Cached modules per worker |
+| `max_body_size` | 10MB | 1B-100MB | Maximum request/response body |
 
 ---
 
