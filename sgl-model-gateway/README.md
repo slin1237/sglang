@@ -770,6 +770,61 @@ curl -X POST "http://localhost:8080/add_worker?url=http://worker3:8000&api_key=w
 - Router logs a warning when a worker is registered without a key while the router expects authentication.
 - When router and workers share the same key, still include the key when invoking dynamic registration APIs.
 
+### TLS (HTTPS) for Gateway Server
+
+Enable TLS to serve the gateway over HTTPS:
+
+```bash
+python3 -m sglang_router.launch_router \
+  --worker-urls http://worker1:8000 \
+  --tls-cert-path /path/to/server.crt \
+  --tls-key-path /path/to/server.key
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `--tls-cert-path` | Path to server certificate (PEM format) |
+| `--tls-key-path` | Path to server private key (PEM format) |
+
+Both parameters must be provided together. The gateway uses rustls with the ring crypto provider for TLS termination. If TLS is not configured, the gateway falls back to plain HTTP.
+
+### mTLS for Worker Communication
+
+Enable mutual TLS (mTLS) for secure communication with workers in HTTP mode:
+
+```bash
+python3 -m sglang_router.launch_router \
+  --worker-urls https://worker1:8443 https://worker2:8443 \
+  --client-cert-path /path/to/client.crt \
+  --client-key-path /path/to/client.key \
+  --ca-cert-path /path/to/ca.crt
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `--client-cert-path` | Path to client certificate for mTLS (PEM format) |
+| `--client-key-path` | Path to client private key for mTLS (PEM format) |
+| `--ca-cert-path` | Path to CA certificate for verifying worker TLS (PEM format) |
+
+**Key Points:**
+- Client certificate and key must be provided together
+- Multiple CA certificates can be added with multiple `--ca-cert-path` flags
+- Uses rustls backend when TLS is configured
+- Single HTTP client is created for all workers (assumes single security domain)
+- TCP keepalive (30 seconds) is enabled for long-lived connections
+
+**Full TLS Example (Gateway HTTPS + Worker mTLS):**
+```bash
+python3 -m sglang_router.launch_router \
+  --worker-urls https://worker1:8443 https://worker2:8443 \
+  --tls-cert-path /etc/certs/server.crt \
+  --tls-key-path /etc/certs/server.key \
+  --client-cert-path /etc/certs/client.crt \
+  --client-key-path /etc/certs/client.key \
+  --ca-cert-path /etc/certs/ca.crt \
+  --api-key "secure-api-key"
+```
+
 ## Development & Testing
 ```bash
 # Build Rust components (debug mode, fast)
