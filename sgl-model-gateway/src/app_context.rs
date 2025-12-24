@@ -8,9 +8,7 @@ use tracing::{debug, info};
 
 use crate::{
     config::RouterConfig,
-    core::{
-        ConnectionMode, JobQueue, LoadMonitor, WorkerRegistry, WorkerService, UNKNOWN_MODEL_ID,
-    },
+    core::{JobQueue, LoadMonitor, WorkerRegistry, WorkerService, UNKNOWN_MODEL_ID},
     data_connector::{
         create_storage, ConversationItemStorage, ConversationStorage, ResponseStorage,
     },
@@ -435,19 +433,23 @@ impl AppContextBuilder {
         Ok(Some(tokenizer))
     }
 
-    /// Create reasoning parser factory for gRPC mode
-    fn maybe_reasoning_parser_factory(mut self, config: &RouterConfig) -> Self {
-        if matches!(config.connection_mode, ConnectionMode::Grpc { .. }) {
-            self.reasoning_parser_factory = Some(ReasoningParserFactory::new());
-        }
+    /// Create reasoning parser factory
+    ///
+    /// Always initializes the factory to support all router types in IGW mode.
+    /// IGW mode creates all routers (HTTP, gRPC, PD variants), and gRPC routers
+    /// require parser factories even when the primary connection_mode is HTTP.
+    fn maybe_reasoning_parser_factory(mut self, _config: &RouterConfig) -> Self {
+        self.reasoning_parser_factory = Some(ReasoningParserFactory::new());
         self
     }
 
-    /// Create tool parser factory for gRPC mode
-    fn maybe_tool_parser_factory(mut self, config: &RouterConfig) -> Self {
-        if matches!(config.connection_mode, ConnectionMode::Grpc { .. }) {
-            self.tool_parser_factory = Some(ToolParserFactory::new());
-        }
+    /// Create tool parser factory
+    ///
+    /// Always initializes the factory to support all router types in IGW mode.
+    /// IGW mode creates all routers (HTTP, gRPC, PD variants), and gRPC routers
+    /// require parser factories even when the primary connection_mode is HTTP.
+    fn maybe_tool_parser_factory(mut self, _config: &RouterConfig) -> Self {
+        self.tool_parser_factory = Some(ToolParserFactory::new());
         self
     }
 

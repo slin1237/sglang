@@ -48,6 +48,63 @@ impl RouterId {
     }
 }
 
+/// Pre-allocated router IDs to avoid heap allocations in hot path
+mod router_ids {
+    use super::RouterId;
+    use std::sync::LazyLock;
+
+    pub static GRPC_PD: LazyLock<RouterId> = LazyLock::new(|| RouterId::new("grpc-pd".to_string()));
+    pub static HTTP_PD: LazyLock<RouterId> = LazyLock::new(|| RouterId::new("http-pd".to_string()));
+    pub static GRPC_REGULAR: LazyLock<RouterId> =
+        LazyLock::new(|| RouterId::new("grpc-regular".to_string()));
+    pub static HTTP_REGULAR: LazyLock<RouterId> =
+        LazyLock::new(|| RouterId::new("http-regular".to_string()));
+}
+
+/// Worker availability flags for router selection
+#[derive(Default, Clone, Copy)]
+struct WorkerAvailability {
+    has_grpc_pd: bool,
+    has_http_pd: bool,
+    has_grpc_regular: bool,
+    has_http_regular: bool,
+}
+
+impl WorkerAvailability {
+    /// Check if all possible worker types have been found (early termination)
+    #[inline]
+    fn all_found(&self) -> bool {
+        self.has_grpc_pd && self.has_http_pd && self.has_grpc_regular && self.has_http_regular
+    }
+
+    /// Categorize a worker and update availability flags
+    #[inline]
+    fn categorize(&mut self, is_grpc: bool, is_pd: bool) {
+        match (is_grpc, is_pd) {
+            (true, true) => self.has_grpc_pd = true,
+            (true, false) => self.has_grpc_regular = true,
+            (false, true) => self.has_http_pd = true,
+            (false, false) => self.has_http_regular = true,
+        }
+    }
+
+    /// Get the best router ID based on priority: grpc-pd > http-pd > grpc-regular > http-regular
+    #[inline]
+    fn best_router_id(&self) -> Option<&'static RouterId> {
+        if self.has_grpc_pd {
+            Some(&router_ids::GRPC_PD)
+        } else if self.has_http_pd {
+            Some(&router_ids::HTTP_PD)
+        } else if self.has_grpc_regular {
+            Some(&router_ids::GRPC_REGULAR)
+        } else if self.has_http_regular {
+            Some(&router_ids::HTTP_REGULAR)
+        } else {
+            None
+        }
+    }
+}
+
 pub struct RouterManager {
     worker_registry: Arc<WorkerRegistry>,
     routers: Arc<DashMap<RouterId, Arc<dyn RouterTrait>>>,
@@ -80,11 +137,15 @@ impl RouterManager {
         if config.router_config.enable_igw {
             info!("Initializing RouterManager in multi-router mode (IGW)");
 
+            // In IGW mode, create all router types to support dynamic worker registration
+            // with any transport (HTTP/gRPC) and mode (regular/PD)
+
+            // Create HTTP Regular router
             match RouterFactory::create_regular_router(app_context).await {
                 Ok(http_regular) => {
                     info!("Created HTTP Regular router");
                     manager.register_router(
-                        RouterId::new("http-regular".to_string()),
+                        router_ids::HTTP_REGULAR.clone(),
                         Arc::from(http_regular),
                     );
                 }
@@ -93,6 +154,21 @@ impl RouterManager {
                 }
             }
 
+            // Create gRPC Regular router
+            match RouterFactory::create_grpc_router(app_context).await {
+                Ok(grpc_regular) => {
+                    info!("Created gRPC Regular router");
+                    manager.register_router(
+                        router_ids::GRPC_REGULAR.clone(),
+                        Arc::from(grpc_regular),
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to create gRPC Regular router: {e}");
+                }
+            }
+
+            // Create HTTP PD router
             match RouterFactory::create_pd_router(
                 None,
                 None,
@@ -103,15 +179,30 @@ impl RouterManager {
             {
                 Ok(http_pd) => {
                     info!("Created HTTP PD router");
-                    manager
-                        .register_router(RouterId::new("http-pd".to_string()), Arc::from(http_pd));
+                    manager.register_router(router_ids::HTTP_PD.clone(), Arc::from(http_pd));
                 }
                 Err(e) => {
                     warn!("Failed to create HTTP PD router: {e}");
                 }
             }
 
-            // TODO: Add gRPC routers once we have dynamic tokenizer loading
+            // Create gRPC PD router
+            match RouterFactory::create_grpc_pd_router(
+                None,
+                None,
+                &config.router_config.policy,
+                app_context,
+            )
+            .await
+            {
+                Ok(grpc_pd) => {
+                    info!("Created gRPC PD router");
+                    manager.register_router(router_ids::GRPC_PD.clone(), Arc::from(grpc_pd));
+                }
+                Err(e) => {
+                    warn!("Failed to create gRPC PD router: {e}");
+                }
+            }
 
             info!(
                 "RouterManager initialized with {} routers for multi-router mode",
@@ -233,103 +324,112 @@ impl RouterManager {
         }
     }
 
+    /// Get router for a model based on worker connection mode and type.
+    ///
+    /// Selection priority: grpc-pd > http-pd > grpc-regular > http-regular
+    /// This priority prefers gRPC over HTTP (for performance) and PD over regular
+    /// (when PD workers are available for disaggregated inference).
     pub fn get_router_for_model(&self, model_id: &str) -> Option<Arc<dyn RouterTrait>> {
         let workers = self.worker_registry.get_by_model(model_id);
 
         if !workers.is_empty() {
-            let has_pd_workers = workers.iter().any(|w| {
-                matches!(
-                    w.worker_type(),
+            let mut availability = WorkerAvailability::default();
+
+            for worker in workers.iter() {
+                let is_pd = matches!(
+                    worker.worker_type(),
                     WorkerType::Prefill { .. } | WorkerType::Decode
-                )
-            });
+                );
+                let is_grpc = matches!(worker.connection_mode(), ConnectionMode::Grpc { .. });
+                availability.categorize(is_grpc, is_pd);
 
-            let router_id = if has_pd_workers {
-                RouterId::new("http-pd".to_string())
-            } else {
-                RouterId::new("http-regular".to_string())
-            };
+                // Early termination: if we found grpc-pd (highest priority), no need to continue
+                if availability.has_grpc_pd {
+                    break;
+                }
+            }
 
-            if let Some(router) = self.routers.get(&router_id) {
-                return Some(router.clone());
+            if let Some(router_id) = availability.best_router_id() {
+                if let Some(router) = self.routers.get(router_id) {
+                    return Some(router.clone());
+                }
             }
         }
 
-        let default_router = self.default_router.read().unwrap();
-        if let Some(ref default_id) = *default_router {
-            self.routers.get(default_id).map(|r| r.clone())
-        } else {
-            None
-        }
+        // Fallback to default router (handle poisoned lock gracefully)
+        self.default_router
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().and_then(|id| self.routers.get(id).map(|r| r.clone())))
     }
 
+    /// Select a router for a request based on headers and model.
+    ///
+    /// Selection priority: grpc-pd > http-pd > grpc-regular > http-regular
     pub fn select_router_for_request(
         &self,
-        headers: Option<&HeaderMap>,
+        _headers: Option<&HeaderMap>,
         model_id: Option<&str>,
     ) -> Option<Arc<dyn RouterTrait>> {
         // In single-router mode (enable_igw=false), always use the default router
         if !self.enable_igw {
-            let default_router = self.default_router.read().unwrap();
-            if let Some(ref default_id) = *default_router {
-                debug!(
-                    "Single-router mode: using default router {} for model {:?}",
-                    default_id.as_str(),
-                    model_id
-                );
-                return self.routers.get(default_id).map(|r| r.clone());
-            }
+            return self
+                .default_router
+                .read()
+                .ok()
+                .and_then(|guard| {
+                    guard.as_ref().map(|id| {
+                        debug!(
+                            "Single-router mode: using default router {} for model {:?}",
+                            id.as_str(),
+                            model_id
+                        );
+                        id.clone()
+                    })
+                })
+                .and_then(|id| self.routers.get(&id).map(|r| r.clone()));
         }
 
-        let prefer_pd = headers
-            .and_then(|h| {
-                h.get("x-prefer-pd")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s == "true" || s == "1")
-            })
-            .unwrap_or(false);
-
-        let (num_regular_workers, num_pd_workers) = self.worker_registry.get_worker_distribution();
-        let mut best_router = None;
-        let mut best_score = -1.0;
-
-        // Extract router validity check into a closure to reduce redundancy
-        let is_router_valid =
-            |is_pd: bool| (is_pd && num_pd_workers > 0) || (!is_pd && num_regular_workers > 0);
-
+        // When model_id is provided, use get_router_for_model which checks actual worker availability
         if let Some(model) = model_id {
-            // Efficient Single Lookup for Specific Model
             if let Some(router) = self.get_router_for_model(model) {
-                if is_router_valid(router.is_pd_mode()) {
-                    return Some(router);
-                }
-            }
-        } else {
-            // ZERO-ALLOCATION Snapshot Iteration (Hot Path Optimization)
-            // Atomic load avoids heap allocations and DashMap shard locks per-request
-            let routers_snapshot = self.routers_snapshot.load();
-            for router in routers_snapshot.iter() {
-                let mut score = 1.0;
-
-                let is_pd = router.is_pd_mode();
-                if prefer_pd && is_pd {
-                    score += 2.0;
-                } else if !prefer_pd && !is_pd {
-                    score += 1.0;
-                }
-                // TODO: Once routers expose worker stats, we can evaluate:
-                // - Average worker priority vs priority_threshold
-                // - Average worker cost vs max_cost
-                // - Current load and health status
-
-                if score > best_score && is_router_valid(is_pd) {
-                    best_score = score;
-                    best_router = Some(Arc::clone(router));
-                }
+                return Some(router);
             }
         }
 
-        best_router
+        // When no model_id, categorize all healthy workers and select best router
+        let workers = self.worker_registry.get_all();
+        let mut availability = WorkerAvailability::default();
+
+        for worker in workers.iter() {
+            if !worker.is_healthy() {
+                continue;
+            }
+            let is_pd = matches!(
+                worker.worker_type(),
+                WorkerType::Prefill { .. } | WorkerType::Decode
+            );
+            let is_grpc = matches!(worker.connection_mode(), ConnectionMode::Grpc { .. });
+            availability.categorize(is_grpc, is_pd);
+
+            // Early termination: if all types found, no need to continue
+            if availability.all_found() {
+                break;
+            }
+        }
+
+        // Get best router based on priority
+        if let Some(router_id) = availability.best_router_id() {
+            if let Some(router) = self.routers.get(router_id) {
+                return Some(router.clone());
+            }
+        }
+
+        // Fallback to default router
+        self.default_router
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().and_then(|id| self.routers.get(id).map(|r| r.clone())))
     }
 }
 
@@ -340,12 +440,35 @@ impl RouterTrait for RouterManager {
     }
 
     async fn health_generate(&self, _req: Request<Body>) -> Response {
-        // TODO: Should check if any router has healthy workers
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "No routers with healthy workers available",
-        )
-            .into_response()
+        // Check if any worker is healthy - report ready if at least one healthy worker exists
+        let workers = self.worker_registry.get_all();
+        let healthy_workers: Vec<_> = workers.iter().filter(|w| w.is_healthy()).collect();
+
+        if healthy_workers.is_empty() {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({
+                    "status": "unhealthy",
+                    "reason": "no healthy workers available",
+                    "total_workers": workers.len(),
+                    "healthy_workers": 0
+                })
+                .to_string(),
+            )
+                .into_response()
+        } else {
+            (
+                StatusCode::OK,
+                serde_json::json!({
+                    "status": "healthy",
+                    "total_workers": workers.len(),
+                    "healthy_workers": healthy_workers.len(),
+                    "routers_count": self.routers.len()
+                })
+                .to_string(),
+            )
+                .into_response()
+        }
     }
 
     async fn get_server_info(&self, _req: Request<Body>) -> Response {
@@ -394,17 +517,12 @@ impl RouterTrait for RouterManager {
 
     async fn get_model_info(&self, req: Request<Body>) -> Response {
         // Route to default router or first available router
-        let router_id = {
-            let default_router = self.default_router.read().unwrap();
-            default_router.clone()
-        };
-
-        let router = if let Some(id) = router_id {
-            self.routers.get(&id).map(|r| r.clone())
-        } else {
-            // If no default, use first available router
-            self.routers.iter().next().map(|r| r.value().clone())
-        };
+        let router = self
+            .default_router
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().and_then(|id| self.routers.get(id).map(|r| r.clone())))
+            .or_else(|| self.routers.iter().next().map(|r| r.value().clone()));
 
         if let Some(router) = router {
             router.get_model_info(req).await
@@ -620,10 +738,16 @@ impl RouterTrait for RouterManager {
 
 impl std::fmt::Debug for RouterManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let default_router = self
+            .default_router
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone());
+
         f.debug_struct("RouterManager")
             .field("routers_count", &self.routers.len())
             .field("workers_count", &self.worker_registry.get_all().len())
-            .field("default_router", &*self.default_router.read().unwrap())
+            .field("default_router", &default_router)
             .finish()
     }
 }
