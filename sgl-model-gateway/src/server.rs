@@ -524,11 +524,14 @@ pub struct ServerConfig {
     pub request_timeout_secs: u64,
     pub request_id_headers: Option<Vec<String>>,
     pub shutdown_grace_period_secs: u64,
+    /// Control plane authentication configuration
+    pub control_plane_auth: Option<crate::auth::ControlPlaneAuthConfig>,
 }
 
 pub fn build_app(
     app_state: Arc<AppState>,
     auth_config: AuthConfig,
+    control_plane_auth_state: Option<crate::auth::ControlPlaneAuthState>,
     max_payload_size: usize,
     request_id_headers: Vec<String>,
     cors_allowed_origins: Vec<String>,
@@ -593,6 +596,7 @@ pub fn build_app(
         .route("/get_model_info", get(get_model_info))
         .route("/get_server_info", get(get_server_info));
 
+    // Build admin routes with control plane auth if configured, otherwise use simple API key auth
     let admin_routes = Router::new()
         .route("/flush_cache", post(flush_cache))
         .route("/get_loads", get(get_loads))
@@ -613,22 +617,40 @@ pub fn build_app(
         .route(
             "/v1/tokenizers/{tokenizer_id}/status",
             get(v1_tokenizers_status),
-        )
-        .route_layer(axum::middleware::from_fn_with_state(
-            auth_config.clone(),
-            middleware::auth_middleware,
-        ));
+        );
 
+    // Build worker routes
     let worker_routes = Router::new()
         .route("/workers", post(create_worker).get(list_workers_rest))
         .route(
             "/workers/{worker_id}",
             get(get_worker).put(update_worker).delete(delete_worker),
-        )
-        .route_layer(axum::middleware::from_fn_with_state(
+        );
+
+    // Apply authentication middleware to control plane routes
+    let (admin_routes, worker_routes) = if let Some(cp_auth_state) = control_plane_auth_state {
+        // Use control plane auth with JWT/OIDC and role-based access
+        let admin_routes = admin_routes.route_layer(axum::middleware::from_fn_with_state(
+            cp_auth_state.clone(),
+            crate::auth::control_plane_auth_middleware,
+        ));
+        let worker_routes = worker_routes.route_layer(axum::middleware::from_fn_with_state(
+            cp_auth_state,
+            crate::auth::control_plane_auth_middleware,
+        ));
+        (admin_routes, worker_routes)
+    } else {
+        // Fallback to simple API key auth (backward compatibility)
+        let admin_routes = admin_routes.route_layer(axum::middleware::from_fn_with_state(
             auth_config.clone(),
             middleware::auth_middleware,
         ));
+        let worker_routes = worker_routes.route_layer(axum::middleware::from_fn_with_state(
+            auth_config,
+            middleware::auth_middleware,
+        ));
+        (admin_routes, worker_routes)
+    };
 
     Router::new()
         .merge(protected_routes)
@@ -881,9 +903,43 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
         api_key: config.router_config.api_key.clone(),
     };
 
+    // Initialize control plane authentication if configured
+    let control_plane_auth_state = if let Some(cp_auth_config) = &config.control_plane_auth {
+        if cp_auth_config.is_enabled() {
+            info!("Initializing control plane authentication...");
+            match crate::auth::ControlPlaneAuthState::from_config(cp_auth_config.clone()).await {
+                Ok(state) => {
+                    if cp_auth_config.has_jwt() {
+                        info!("Control plane JWT/OIDC authentication enabled");
+                    }
+                    if cp_auth_config.has_api_keys() {
+                        info!(
+                            "Control plane API key authentication enabled ({} keys)",
+                            cp_auth_config.api_keys.len()
+                        );
+                    }
+                    if cp_auth_config.audit_enabled {
+                        info!("Control plane audit logging enabled");
+                    }
+                    Some(state)
+                }
+                Err(e) => {
+                    error!("Failed to initialize control plane auth: {}. Falling back to simple API key auth.", e);
+                    None
+                }
+            }
+        } else {
+            debug!("No control plane authentication configured, using simple API key auth");
+            None
+        }
+    } else {
+        None
+    };
+
     let app = build_app(
         app_state,
         auth_config,
+        control_plane_auth_state,
         config.max_payload_size,
         request_id_headers,
         config.router_config.cors_allowed_origins.clone(),
