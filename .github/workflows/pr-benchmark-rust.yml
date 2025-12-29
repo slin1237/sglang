@@ -309,8 +309,8 @@ jobs:
               echo "<summary>View Results</summary>" >> summary.md
               echo "" >> summary.md
               echo '```' >> summary.md
-              # Extract the summary section (starts with "SGLang Router" or performance data)
-              grep -A 100 "SGLang Router\|Quick Performance\|Performance Insights" "$REQ_DIR/benchmark_output.txt" | head -50 >> summary.md || cat "$REQ_DIR/benchmark_output.txt" | tail -60 >> summary.md
+              # Extract the summary section (starts with "SGLang Model Gateway" or performance data)
+              grep -A 100 "SGLang Model Gateway\|Quick Performance\|Performance Insights" "$REQ_DIR/benchmark_output.txt" | head -50 >> summary.md || cat "$REQ_DIR/benchmark_output.txt" | tail -60 >> summary.md
               echo '```' >> summary.md
               echo "</details>" >> summary.md
             fi
