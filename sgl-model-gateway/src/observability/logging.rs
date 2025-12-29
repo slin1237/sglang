@@ -61,8 +61,11 @@ const fn level_to_str(level: Level) -> &'static str {
 
 #[inline]
 fn build_filter_string(targets: &[String], level_filter: &str) -> String {
-    let estimated_capacity = targets.len() * (20 + level_filter.len() + 2);
-    let mut filter_string = String::with_capacity(estimated_capacity);
+    // Exact capacity: sum of target lengths + "=" and level per target + commas between
+    let capacity = targets.iter().map(String::len).sum::<usize>()
+        + targets.len() * (1 + level_filter.len())
+        + targets.len().saturating_sub(1);
+    let mut filter_string = String::with_capacity(capacity);
 
     for (i, target) in targets.iter().enumerate() {
         if i > 0 {
