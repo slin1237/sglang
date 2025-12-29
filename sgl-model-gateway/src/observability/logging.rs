@@ -56,15 +56,9 @@ pub fn init_logging(config: LoggingConfig, otel_layer_config: Option<TraceConfig
         let filter_string = if let Some(targets) = &config.log_targets {
             targets
                 .iter()
-                .enumerate()
-                .map(|(i, target)| {
-                    if i > 0 {
-                        format!(",{}={}", target, level_filter)
-                    } else {
-                        format!("{}={}", target, level_filter)
-                    }
-                })
-                .collect::<String>()
+                .map(|target| format!("{}={}", target, level_filter))
+                .collect::<Vec<_>>()
+                .join(",")
         } else {
             format!("sgl_model_gateway={}", level_filter)
         };
