@@ -76,7 +76,7 @@ def test_tls_server() -> None:
     cmd = [
         sys.executable,
         "-m",
-        "sglang_router.launch_router",
+        "sgl_model_gateway.launch_router",
         "--worker-urls",
         "http://127.0.0.1:9999",  # Dummy worker
         "--host",

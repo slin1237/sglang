@@ -1,11 +1,11 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
-build-backend = "maturin"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "sgl-model-gateway"
+name = "sglang-router"
 version = "0.3.0"
-description = "High-performance Rust-based load balancer for SGLang with multiple routing algorithms and prefill-decode disaggregation support"
+description = "DEPRECATED: This package has been renamed to sgl-model-gateway. Please install sgl-model-gateway instead."
 authors = [
     {name = "Simo Lin", email = "linsimo.mark@gmail.com"},
     {name = "Chang Su", email = "mckvtl@gmail.com"},
@@ -13,11 +13,11 @@ authors = [
     {name = "Byron Hsu", email = "byronhsu1230@gmail.com"}
 ]
 requires-python = ">=3.8"
-readme = "../../README.md"
+readme = "README.md"
 license = { text = "Apache-2.0" }
 classifiers = [
+    "Development Status :: 7 - Inactive",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -29,26 +29,12 @@ classifiers = [
 ]
 
 dependencies = [
-    "setproctitle",
-    "aiohttp",
-    "orjson",
-    "uvicorn",
-    "fastapi",
-]
-
-[project.optional-dependencies]
-dev = [
-    "requests>=2.25.0",
+    "sgl-model-gateway>=0.3.0",
 ]
 
 [project.scripts]
-smg = "sgl_model_gateway.cli:main"
-amg = "sgl_model_gateway.cli:main"
-sgl-model-gateway = "sgl_model_gateway.cli:main"
+sglang-router = "sglang_router.cli:main"
 
-
-[tool.maturin]
-python-source = "."
-module-name = "sgl_model_gateway.sgl_model_gateway_rs"
-# Exclude bindings/python/README.md to use root README only
-exclude = ["README.md"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sglang_router*"]

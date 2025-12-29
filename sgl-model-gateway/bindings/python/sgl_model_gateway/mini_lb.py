@@ -16,7 +16,7 @@ import orjson
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import ORJSONResponse, Response, StreamingResponse
-from sglang_router.router_args import RouterArgs
+from sgl_model_gateway.router_args import RouterArgs
 
 try:
     from sglang.srt.tracing.trace import (

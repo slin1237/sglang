@@ -1,6 +1,6 @@
 # SGLang Model Gateway Python Bindings
 
-This directory contains the Python bindings for the SGLang Router, built using [maturin](https://github.com/PyO3/maturin) and [PyO3](https://github.com/PyO3/pyo3).
+This directory contains the Python bindings for the SGLang Model Gateway, built using [maturin](https://github.com/PyO3/maturin) and [PyO3](https://github.com/PyO3/pyo3).
 
 ## Directory Structure
 
@@ -8,7 +8,7 @@ This directory contains the Python bindings for the SGLang Router, built using [
 bindings/python/
 ├── src/                    # Rust source code for Python bindings
 │   └── lib.rs              # PyO3 bindings implementation
-├── sglang_router/          # Python source code
+├── sgl_model_gateway/      # Python source code
 │   ├── __init__.py
 │   ├── version.py
 │   ├── launch_server.py
@@ -45,7 +45,7 @@ cd sgl-model-gateway/bindings/python
 maturin build --release --out dist --features vendored-openssl
 
 # Install the built wheel
-pip install dist/sglang_router-*.whl
+pip install dist/sgl_model_gateway-*.whl
 ```
 
 ## Testing
@@ -60,12 +60,12 @@ pytest py_test/
 
 - **pyproject.toml**: Defines package metadata, dependencies, and build configuration
 - **python-source**: Set to "." to indicate Python source is in the same directory as pyproject.toml
-- **module-name**: `sglang_router.sglang_router_rs` - the Rust extension module name
+- **module-name**: `sgl_model_gateway.sgl_model_gateway_rs` - the Rust extension module name
 
 ## Notes
 
 - The Rust bindings source code is located in `src/lib.rs`
 - The bindings have their own `Cargo.toml` in this directory
-- The main sglang-router library is located in `../../` and is used as a dependency
+- The main sgl-model-gateway library is located in `../../` and is used as a dependency
 - The package includes both Python code and Rust extensions built with PyO3
 - PyO3 types are prefixed with `Py` in Rust but exposed to Python without the prefix using the `name` attribute

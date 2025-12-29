@@ -7,8 +7,8 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 _SRC = _ROOT / "bindings" / "python"
 
-# Check if sglang_router is already installed with the Rust extension
-_wheel_installed = find_spec("sglang_router.sglang_router_rs") is not None
+# Check if sgl_model_gateway is already installed with the Rust extension
+_wheel_installed = find_spec("sgl_model_gateway.sgl_model_gateway_rs") is not None
 
 # Only add bindings/python if wheel is not installed (development mode)
 if not _wheel_installed and str(_SRC) not in sys.path:

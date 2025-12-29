@@ -112,8 +112,8 @@ python-clean: ## Clean Python build artifacts
 	@echo "Cleaning Python build artifacts..."
 	@rm -rf $(PYTHON_DIR)/dist/
 	@rm -rf $(PYTHON_DIR)/target/
-	@rm -rf $(PYTHON_DIR)/sglang_router.egg-info/
-	@rm -rf $(PYTHON_DIR)/sglang_router/__pycache__/
+	@rm -rf $(PYTHON_DIR)/sgl_model_gateway.egg-info/
+	@rm -rf $(PYTHON_DIR)/sgl_model_gateway/__pycache__/
 	@find $(PYTHON_DIR) -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	@find $(PYTHON_DIR) -name "*.pyc" -delete 2>/dev/null || true
 	@echo "Python build artifacts cleaned!"

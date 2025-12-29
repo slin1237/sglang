@@ -69,7 +69,7 @@ def _popen_launch_router(
     cmd = [
         "python3",
         "-m",
-        "sglang_router.launch_server",
+        "sgl_model_gateway.launch_server",
         "--model-path",
         model,
         "--host",
@@ -141,7 +141,7 @@ def _popen_launch_router_only(
     cmd = [
         "python3",
         "-m",
-        "sglang_router.launch_router",
+        "sgl_model_gateway.launch_router",
         "--host",
         host,
         "--port",

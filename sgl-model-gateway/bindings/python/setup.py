@@ -12,14 +12,14 @@ if with_rust:
 
     rust_extensions.append(
         RustExtension(
-            target="sglang_router_rs",
+            target="sgl_model_gateway_rs",
             path="Cargo.toml",
             binding=Binding.PyO3,
         )
     )
 else:
     warnings.warn(
-        "Building 'sglang-router' without Rust support. Performance may be degraded."
+        "Building 'sgl-model-gateway' without Rust support. Performance may be degraded."
     )
 
 setup(

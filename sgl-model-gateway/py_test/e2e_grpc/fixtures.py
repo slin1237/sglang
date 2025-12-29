@@ -263,7 +263,7 @@ def popen_launch_workers_and_router(
     router_cmd = [
         "python3",
         "-m",
-        "sglang_router.launch_router",
+        "sgl_model_gateway.launch_router",
         "--host",
         "127.0.0.1",
         "--port",
