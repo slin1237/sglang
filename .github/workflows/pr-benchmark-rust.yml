@@ -99,24 +99,41 @@ jobs:
           cache-on-failure: true
           save-if: true
 
-      - name: Run request processing benchmark
+      - name: Build all benchmarks
         run: |
           source "$HOME/.cargo/env"
           cd sgl-model-gateway/
           mkdir -p benchmark_outputs
-          cargo bench --bench request_processing -- benchmark_summary --exact 2>&1 | tee benchmark_outputs/request_processing.txt
+          # Build all benchmarks first to avoid parallel compilation conflicts
+          cargo build --release --benches
 
-      - name: Run tokenizer benchmark
+      - name: Run all benchmarks in parallel
         run: |
           source "$HOME/.cargo/env"
           cd sgl-model-gateway/
-          cargo bench --bench tokenizer_benchmark 2>&1 | tee benchmark_outputs/tokenizer.txt
 
-      - name: Run tool parser benchmark
-        run: |
-          source "$HOME/.cargo/env"
-          cd sgl-model-gateway/
-          cargo bench --bench tool_parser_benchmark 2>&1 | tee benchmark_outputs/tool_parser.txt
+          # Run all 3 benchmarks in parallel as background processes
+          cargo bench --bench request_processing -- benchmark_summary --exact 2>&1 | tee benchmark_outputs/request_processing.txt &
+          PID1=$!
+
+          cargo bench --bench tokenizer_benchmark 2>&1 | tee benchmark_outputs/tokenizer.txt &
+          PID2=$!
+
+          cargo bench --bench tool_parser_benchmark 2>&1 | tee benchmark_outputs/tool_parser.txt &
+          PID3=$!
+
+          # Wait for all benchmarks to complete and capture exit codes
+          EXIT1=0; wait $PID1 || EXIT1=$?
+          EXIT2=0; wait $PID2 || EXIT2=$?
+          EXIT3=0; wait $PID3 || EXIT3=$?
+
+          echo "Benchmark exit codes: request_processing=$EXIT1, tokenizer=$EXIT2, tool_parser=$EXIT3"
+
+          # Fail if any benchmark failed
+          if [ $EXIT1 -ne 0 ] || [ $EXIT2 -ne 0 ] || [ $EXIT3 -ne 0 ]; then
+            echo "One or more benchmarks failed"
+            exit 1
+          fi
 
       - name: Upload benchmark results
         if: always()
