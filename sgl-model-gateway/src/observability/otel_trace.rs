@@ -1,16 +1,4 @@
-//! OpenTelemetry tracing integration with minimal runtime overhead.
-//!
-//! # Performance Characteristics
-//!
-//! - **`is_otel_enabled()`**: Single atomic load with `Relaxed` ordering (~1 CPU cycle)
-//! - **Filter checks**: Uses `callsite_enabled` for compile-time caching of filter decisions
-//! - **Context injection**: Lazy - only runs when OTEL is enabled
-//! - **Allowed targets**: Static array, no heap allocation
-//!
-//! # Memory Usage
-//!
-//! - Global state: ~64 bytes (AtomicBool + 3 OnceLock pointers)
-//! - Per-span: Determined by OpenTelemetry SDK (typically ~200 bytes)
+//! OpenTelemetry tracing integration.
 
 use std::{
     sync::{
@@ -41,34 +29,16 @@ use tracing_subscriber::{
 
 use super::events::get_module_path as events_module_path;
 
-/// Global flag indicating whether OTEL is enabled.
-/// Uses `Relaxed` ordering for maximum performance - eventual consistency is acceptable.
 static ENABLED: AtomicBool = AtomicBool::new(false);
-
-// Global tracer and provider - initialized once at startup
 static TRACER: OnceLock<SdkTracer> = OnceLock::new();
 static PROVIDER: OnceLock<TracerProvider> = OnceLock::new();
-
-/// Targets allowed for OTEL export.
-///
-/// Using a static slice avoids allocations. The `OnceLock` ensures
-/// we only initialize once, with a fast path for subsequent checks.
-///
-/// Note: "sgl_model_gateway::otel-trace" is a custom target used for manual spans,
-/// not the actual module path.
 static ALLOWED_TARGETS: OnceLock<[&'static str; 3]> = OnceLock::new();
 
-/// Returns the list of allowed OTEL targets.
-///
-/// # Performance
-///
-/// First call initializes the array (one-time cost).
-/// Subsequent calls return a static reference with no allocation.
 #[inline]
 fn get_allowed_targets() -> &'static [&'static str; 3] {
     ALLOWED_TARGETS.get_or_init(|| {
         [
-            "sgl_model_gateway::otel-trace", // Custom target for manual spans
+            "sgl_model_gateway::otel-trace",
             "sgl_model_gateway::observability::otel_trace",
             events_module_path(),
         ]
@@ -76,29 +46,15 @@ fn get_allowed_targets() -> &'static [&'static str; 3] {
 }
 
 /// Filter that only allows specific module targets to be exported to OTEL.
-///
-/// # Performance
-///
-/// - Zero-sized type (no memory overhead)
-/// - Uses `callsite_enabled` for compile-time caching: the filter decision
-///   is made once per callsite and cached by the tracing infrastructure
-/// - `is_allowed` is inlined for fast prefix matching
 #[derive(Clone, Copy, Default)]
 pub struct CustomOtelFilter;
 
 impl CustomOtelFilter {
-    /// Create a new filter instance.
     #[inline]
     pub const fn new() -> Self {
         Self
     }
 
-    /// Check if a target module is allowed for OTEL export.
-    ///
-    /// # Performance
-    ///
-    /// Uses prefix matching with a small static array.
-    /// Typical case: 3 comparisons with short-circuit on first match.
     #[inline]
     fn is_allowed(target: &str) -> bool {
         get_allowed_targets()
@@ -116,13 +72,6 @@ where
         Self::is_allowed(meta.target())
     }
 
-    /// Called once per callsite to determine if it should ever be enabled.
-    ///
-    /// # Performance
-    ///
-    /// This is the key optimization: by returning `Interest::never()` for
-    /// non-matching callsites, we avoid all future filter checks for those
-    /// callsites. The tracing infrastructure caches this result.
     #[inline]
     fn callsite_enabled(&self, meta: &'static Metadata<'static>) -> tracing::subscriber::Interest {
         if Self::is_allowed(meta.target()) {
@@ -133,11 +82,6 @@ where
     }
 }
 
-/// Initialize OpenTelemetry tracing with OTLP exporter.
-///
-/// # Arguments
-/// * `enable` - Whether to enable OTEL tracing
-/// * `otlp_endpoint` - OTLP collector endpoint (defaults to "localhost:4317")
 pub fn otel_tracing_init(enable: bool, otlp_endpoint: Option<&str>) -> Result<()> {
     if !enable {
         ENABLED.store(false, Ordering::Relaxed);
@@ -200,9 +144,7 @@ pub fn otel_tracing_init(enable: bool, otlp_endpoint: Option<&str>) -> Result<()
     Ok(())
 }
 
-/// Get the OpenTelemetry tracing layer to add to the subscriber.
-///
-/// Must be called after `otel_tracing_init` with `enable=true`.
+/// Get the OpenTelemetry tracing layer. Must be called after `otel_tracing_init`.
 pub fn get_otel_layer<S>() -> Result<Box<dyn Layer<S> + Send + Sync + 'static>>
 where
     S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a> + Send + Sync,
@@ -223,15 +165,11 @@ where
     Ok(Box::new(layer))
 }
 
-/// Returns whether OpenTelemetry tracing is enabled.
 #[inline]
 pub fn is_otel_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Flush all pending spans to the OTLP collector.
-///
-/// This is useful before shutdown or when you need to ensure spans are exported.
 pub async fn flush_spans_async() -> Result<()> {
     if !is_otel_enabled() {
         return Ok(());
@@ -249,7 +187,6 @@ pub async fn flush_spans_async() -> Result<()> {
     Ok(())
 }
 
-/// Shutdown OpenTelemetry tracing and flush remaining spans.
 pub fn shutdown_otel() {
     if ENABLED.load(Ordering::Relaxed) {
         global::shutdown_tracer_provider();
@@ -259,14 +196,6 @@ pub fn shutdown_otel() {
 }
 
 /// Inject W3C trace context headers into an HTTP request.
-///
-/// This propagates the current span context to downstream services.
-/// Does nothing if OTEL is not enabled.
-///
-/// # Performance
-///
-/// - Early return if OTEL disabled (single atomic load)
-/// - Header names from W3C spec are already lowercase ASCII
 #[inline]
 pub fn inject_trace_context_http(headers: &mut HeaderMap) {
     if !is_otel_enabled() {
@@ -280,7 +209,6 @@ pub fn inject_trace_context_http(headers: &mut HeaderMap) {
     impl opentelemetry::propagation::Injector for HeaderInjector<'_> {
         #[inline]
         fn set(&mut self, key: &str, value: String) {
-            // W3C trace context headers (traceparent, tracestate) are already lowercase
             if let Ok(header_name) = HeaderName::from_bytes(key.as_bytes()) {
                 if let Ok(header_value) = HeaderValue::from_str(&value) {
                     self.0.insert(header_name, header_value);
@@ -295,14 +223,6 @@ pub fn inject_trace_context_http(headers: &mut HeaderMap) {
 }
 
 /// Inject W3C trace context into gRPC metadata.
-///
-/// This propagates the current span context to downstream gRPC services.
-/// Does nothing if OTEL is not enabled.
-///
-/// # Performance
-///
-/// - Early return if OTEL disabled (single atomic load)
-/// - W3C trace headers are already lowercase, avoiding allocation
 #[inline]
 pub fn inject_trace_context_grpc(metadata: &mut MetadataMap) {
     if !is_otel_enabled() {
@@ -316,9 +236,6 @@ pub fn inject_trace_context_grpc(metadata: &mut MetadataMap) {
     impl opentelemetry::propagation::Injector for MetadataInjector<'_> {
         #[inline]
         fn set(&mut self, key: &str, value: String) {
-            // W3C trace context keys (traceparent, tracestate) are already lowercase ASCII.
-            // The OpenTelemetry propagator always sends lowercase keys, so we can avoid
-            // the to_lowercase() allocation.
             if let Ok(metadata_key) = MetadataKey::from_bytes(key.as_bytes()) {
                 if let Ok(metadata_value) = MetadataValue::try_from(&value) {
                     self.0.insert(metadata_key, metadata_value);
