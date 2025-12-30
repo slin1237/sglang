@@ -391,9 +391,11 @@ impl LoadMonitor {
             interval_timer.tick().await;
 
             let power_of_two_policies = policy_registry.get_all_power_of_two_policies();
+            let cache_aware_policies = policy_registry.get_all_cache_aware_policies();
 
-            if power_of_two_policies.is_empty() {
-                debug!("No PowerOfTwo policies found, skipping load fetch");
+            // Skip load fetch if no policies need it
+            if power_of_two_policies.is_empty() && cache_aware_policies.is_empty() {
+                debug!("No load-aware policies found, skipping load fetch");
                 continue;
             }
 
@@ -406,13 +408,22 @@ impl LoadMonitor {
 
             if !loads.is_empty() {
                 debug!(
-                    "Fetched loads from {} workers, updating {} PowerOfTwo policies",
+                    "Fetched loads from {} workers, updating {} PowerOfTwo and {} CacheAware policies",
                     loads.len(),
-                    power_of_two_policies.len()
+                    power_of_two_policies.len(),
+                    cache_aware_policies.len()
                 );
+
+                // Update PowerOfTwo policies
                 for policy in &power_of_two_policies {
                     policy.update_loads(&loads);
                 }
+
+                // Update CacheAware policies (for global load-based imbalance detection)
+                for policy in &cache_aware_policies {
+                    policy.update_loads(&loads);
+                }
+
                 let _ = tx.send(loads);
             } else {
                 warn!("No loads fetched from workers");

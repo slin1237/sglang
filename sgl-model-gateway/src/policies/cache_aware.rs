@@ -59,7 +59,10 @@
     during the next eviction cycle.
 */
 
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use dashmap::DashMap;
 use rand::Rng;
@@ -76,11 +79,19 @@ use crate::core::Worker;
 /// Routes requests based on cache affinity when load is balanced,
 /// switches to shortest-queue routing when load is imbalanced.
 /// Maintains separate trees per model for multi-model support.
+///
+/// When global load information is available (via LoadMonitor), uses that
+/// for imbalance detection to enable consistent decisions across multiple
+/// gateway instances.
 #[derive(Debug)]
 pub struct CacheAwarePolicy {
     config: CacheAwareConfig,
     trees: Arc<DashMap<String, Arc<Tree>>>,
     _eviction_task: Option<PeriodicTask>,
+    /// Cached load information from external monitoring (LoadMonitor)
+    /// When available, used for imbalance detection instead of local counters
+    /// This enables consistent load balancing across multiple gateway instances
+    cached_loads: RwLock<HashMap<String, isize>>,
 }
 
 impl CacheAwarePolicy {
@@ -120,6 +131,7 @@ impl CacheAwarePolicy {
             config,
             trees,
             _eviction_task: eviction_task,
+            cached_loads: RwLock::new(HashMap::new()),
         }
     }
 
@@ -206,24 +218,40 @@ impl CacheAwarePolicy {
         max_load: usize,
         min_load: usize,
     ) -> Option<usize> {
+        // Try to use global loads for worker selection when available
+        let cached_loads_guard = self.cached_loads.read().ok();
+        let cached_loads = cached_loads_guard.as_ref();
+
+        // Check if we have global load data for all healthy workers
+        let have_all_global_loads = cached_loads.is_some_and(|loads| {
+            !loads.is_empty()
+                && healthy_indices
+                    .iter()
+                    .all(|&idx| loads.contains_key(workers[idx].url()))
+        });
+
+        // Use shortest queue when imbalanced - prefer global loads when available
+        let min_load_idx = if have_all_global_loads {
+            let loads = cached_loads.unwrap();
+            healthy_indices
+                .iter()
+                .min_by_key(|&&idx| loads.get(workers[idx].url()).unwrap_or(&0))
+                .copied()?
+        } else {
+            healthy_indices
+                .iter()
+                .min_by_key(|&&idx| workers[idx].load())
+                .copied()?
+        };
+
         // Log load balancing trigger
-        // TODO may use `&str`
-        let worker_loads: Vec<(String, usize)> = workers
-            .iter()
-            .map(|w| (w.url().to_string(), w.load()))
-            .collect();
-
-        // TODO may change text
         debug!(
-            "Load balancing triggered | max: {} | min: {} | workers: {:?}",
-            max_load, min_load, worker_loads
+            "Load balancing triggered | max: {} | min: {} | selected: {} | using_global: {}",
+            max_load,
+            min_load,
+            workers[min_load_idx].url(),
+            have_all_global_loads
         );
-
-        // Use shortest queue when imbalanced
-        let min_load_idx = healthy_indices
-            .iter()
-            .min_by_key(|&&idx| workers[idx].load())
-            .copied()?;
 
         // Even in imbalanced mode, update the tree to maintain cache state
         if let Some(text) = request_text {
@@ -262,16 +290,57 @@ impl LoadBalancingPolicy for CacheAwarePolicy {
         // All workers should be from the same model
         let model_id = normalize_model_key(workers[healthy_indices[0]].model_id());
 
-        // Get current load statistics - compute min/max in single pass without allocation
-        let (min_load, max_load) = workers.iter().fold((usize::MAX, 0usize), |(min, max), w| {
-            let load = w.load();
-            (min.min(load), max.max(load))
-        });
-        let min_load = if min_load == usize::MAX { 0 } else { min_load };
+        // Get current load statistics
+        // Prefer global loads from LoadMonitor when available for cross-gateway consistency
+        let (min_load, max_load, use_global_loads) = {
+            let cached_loads_guard = self.cached_loads.read().ok();
+            let cached_loads = cached_loads_guard.as_ref();
+
+            // Check if we have global load data for ALL healthy workers
+            let have_all_global_loads = cached_loads.is_some_and(|loads| {
+                !loads.is_empty()
+                    && healthy_indices
+                        .iter()
+                        .all(|&idx| loads.contains_key(workers[idx].url()))
+            });
+
+            if have_all_global_loads {
+                // Use global loads (token counts from workers) for imbalance detection
+                let loads = cached_loads.unwrap();
+                let (min, max) = healthy_indices.iter().fold(
+                    (isize::MAX, isize::MIN),
+                    |(min, max), &idx| {
+                        let load = *loads.get(workers[idx].url()).unwrap_or(&0);
+                        (min.min(load), max.max(load))
+                    },
+                );
+                let min = if min == isize::MAX { 0 } else { min as usize };
+                let max = if max == isize::MIN { 0 } else { max as usize };
+                (min, max, true)
+            } else {
+                // Fallback to local request counters
+                let (min, max) =
+                    workers
+                        .iter()
+                        .fold((usize::MAX, 0usize), |(min, max), w| {
+                            let load = w.load();
+                            (min.min(load), max.max(load))
+                        });
+                let min = if min == usize::MAX { 0 } else { min };
+                (min, max, false)
+            }
+        };
 
         // Check if load is imbalanced
         let is_imbalanced = max_load.saturating_sub(min_load) > self.config.balance_abs_threshold
             && (max_load as f32) > (min_load as f32 * self.config.balance_rel_threshold);
+
+        if use_global_loads && is_imbalanced {
+            debug!(
+                "Using global loads for imbalance detection | max: {} | min: {} | threshold: {}",
+                max_load, min_load, self.config.balance_abs_threshold
+            );
+        }
 
         if is_imbalanced {
             return self.select_worker_min_load(
@@ -361,6 +430,16 @@ impl LoadBalancingPolicy for CacheAwarePolicy {
 
     fn needs_request_text(&self) -> bool {
         true // Cache-aware policy needs request text for cache affinity
+    }
+
+    fn update_loads(&self, loads: &HashMap<String, isize>) {
+        if let Ok(mut cached) = self.cached_loads.write() {
+            *cached = loads.clone();
+            debug!(
+                "CacheAwarePolicy: Updated global loads for {} workers",
+                loads.len()
+            );
+        }
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

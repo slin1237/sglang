@@ -262,6 +262,46 @@ impl PolicyRegistry {
         power_of_two_policies
     }
 
+    /// Get all CacheAware policies that need load updates (lock-free)
+    pub fn get_all_cache_aware_policies(&self) -> Vec<Arc<dyn LoadBalancingPolicy>> {
+        let mut cache_aware_policies = Vec::new();
+
+        if self.default_policy.name() == "cache_aware" {
+            cache_aware_policies.push(Arc::clone(&self.default_policy));
+        }
+
+        // Get prefill and decode policies (lock-free via OnceLock::get)
+        let prefill_policy_opt = self.prefill_policy.get();
+        let decode_policy_opt = self.decode_policy.get();
+
+        if let Some(policy) = prefill_policy_opt {
+            if policy.name() == "cache_aware" && !Arc::ptr_eq(policy, &self.default_policy) {
+                cache_aware_policies.push(Arc::clone(policy));
+            }
+        }
+
+        if let Some(policy) = decode_policy_opt {
+            if policy.name() == "cache_aware"
+                && !Arc::ptr_eq(policy, &self.default_policy)
+                && !prefill_policy_opt.is_some_and(|p| Arc::ptr_eq(p, policy))
+            {
+                cache_aware_policies.push(Arc::clone(policy));
+            }
+        }
+
+        for entry in self.model_policies.iter() {
+            let policy = entry.value();
+            if policy.name() == "cache_aware" {
+                let already_added = cache_aware_policies.iter().any(|p| Arc::ptr_eq(p, policy));
+                if !already_added {
+                    cache_aware_policies.push(Arc::clone(policy));
+                }
+            }
+        }
+
+        cache_aware_policies
+    }
+
     /// Initialize cache-aware policy with workers if applicable
     /// This should be called after workers are registered for a model
     pub fn init_cache_aware_policy(&self, model_id: &str, workers: &[Arc<dyn Worker>]) {
