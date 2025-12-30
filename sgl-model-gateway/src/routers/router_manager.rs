@@ -21,7 +21,7 @@ use tracing::{debug, info, warn};
 use crate::{
     app_context::AppContext,
     config::RoutingMode,
-    core::{ConnectionMode, WorkerRegistry, WorkerType},
+    core::{ConnectionMode, RuntimeType, WorkerRegistry, WorkerType},
     protocols::{
         chat::ChatCompletionRequest,
         classify::ClassifyRequest,
@@ -54,6 +54,7 @@ pub mod router_ids {
 
     pub const HTTP_REGULAR: RouterId = RouterId::new("http-regular");
     pub const HTTP_PD: RouterId = RouterId::new("http-pd");
+    pub const HTTP_VLLM_PD: RouterId = RouterId::new("http-vllm-pd");
     pub const HTTP_OPENAI: RouterId = RouterId::new("http-openai");
     pub const GRPC_REGULAR: RouterId = RouterId::new("grpc-regular");
     pub const GRPC_PD: RouterId = RouterId::new("grpc-pd");
@@ -114,7 +115,7 @@ impl RouterManager {
 
             info!("PD disaggregation auto-enabled for IGW mode, creating PD routers");
 
-            // Create HTTP PD router
+            // Create HTTP PD router (SGLang)
             match RouterFactory::create_pd_router(
                 None,
                 None,
@@ -124,11 +125,29 @@ impl RouterManager {
             .await
             {
                 Ok(http_pd) => {
-                    info!("Created HTTP PD router");
+                    info!("Created HTTP PD router (SGLang)");
                     manager.register_router(router_ids::HTTP_PD, Arc::from(http_pd));
                 }
                 Err(e) => {
                     warn!("Failed to create HTTP PD router: {e}");
+                }
+            }
+
+            // Create HTTP vLLM PD router
+            match RouterFactory::create_vllm_pd_router(
+                None,
+                None,
+                &config.router_config.policy,
+                app_context,
+            )
+            .await
+            {
+                Ok(http_vllm_pd) => {
+                    info!("Created HTTP vLLM PD router");
+                    manager.register_router(router_ids::HTTP_VLLM_PD, Arc::from(http_vllm_pd));
+                }
+                Err(e) => {
+                    warn!("Failed to create HTTP vLLM PD router: {e}");
                 }
             }
 
@@ -281,7 +300,8 @@ impl RouterManager {
         let workers = self.worker_registry.get_by_model(model_id);
 
         // Find the best router ID based on worker capabilities
-        // Priority: grpc-pd > http-pd > grpc-regular > http-regular
+        // Priority: grpc-pd > http-vllm-pd/http-pd > grpc-regular > http-regular
+        // For HTTP PD, select based on runtime_type (vLLM vs SGLang)
         let best_router_id = workers
             .iter()
             .map(|w| {
@@ -290,12 +310,14 @@ impl RouterManager {
                     WorkerType::Prefill { .. } | WorkerType::Decode
                 );
                 let is_grpc = matches!(w.connection_mode(), ConnectionMode::Grpc { .. });
+                let is_vllm = matches!(w.metadata().runtime_type, RuntimeType::Vllm);
 
-                match (is_grpc, is_pd) {
-                    (true, true) => (3, &router_ids::GRPC_PD),
-                    (false, true) => (2, &router_ids::HTTP_PD),
-                    (true, false) => (1, &router_ids::GRPC_REGULAR),
-                    (false, false) => (0, &router_ids::HTTP_REGULAR),
+                match (is_grpc, is_pd, is_vllm) {
+                    (true, true, _) => (3, &router_ids::GRPC_PD),
+                    (false, true, true) => (2, &router_ids::HTTP_VLLM_PD),
+                    (false, true, false) => (2, &router_ids::HTTP_PD),
+                    (true, false, _) => (1, &router_ids::GRPC_REGULAR),
+                    (false, false, _) => (0, &router_ids::HTTP_REGULAR),
                 }
             })
             .max_by_key(|(score, _)| *score)

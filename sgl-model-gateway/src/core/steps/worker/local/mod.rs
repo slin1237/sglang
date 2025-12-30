@@ -1,5 +1,6 @@
 mod create_worker;
 mod detect_connection;
+mod detect_runtime;
 mod discover_dp;
 mod discover_metadata;
 mod find_worker_to_update;
@@ -15,6 +16,7 @@ use std::{sync::Arc, time::Duration};
 
 pub use create_worker::CreateLocalWorkerStep;
 pub use detect_connection::DetectConnectionModeStep;
+pub use detect_runtime::{detect_runtime_from_metrics, DetectRuntimeStep};
 pub use discover_dp::{get_dp_info, DiscoverDPInfoStep, DpInfo};
 pub use discover_metadata::DiscoverMetadataStep;
 pub use find_worker_to_update::FindWorkerToUpdateStep;
@@ -88,7 +90,22 @@ pub fn create_local_worker_workflow(router_config: &RouterConfig) -> WorkflowDef
             .with_timeout(detect_timeout)
             .with_failure_action(FailureAction::FailWorkflow),
         )
-        // Step 2a: Discover metadata (parallel with DP discovery)
+        // Step 1b: Detect runtime type (SGLang vs vLLM) using /metrics
+        .add_step(
+            StepDefinition::new(
+                "detect_runtime",
+                "Detect Runtime Type",
+                Arc::new(DetectRuntimeStep),
+            )
+            .with_retry(RetryPolicy {
+                max_attempts: 2,
+                backoff: BackoffStrategy::Fixed(Duration::from_secs(1)),
+            })
+            .with_timeout(Duration::from_secs(10))
+            .with_failure_action(FailureAction::ContinueNextStep)
+            .depends_on(&["detect_connection_mode"]),
+        )
+        // Step 2a: Discover metadata (after runtime detection)
         .add_step(
             StepDefinition::new(
                 "discover_metadata",
@@ -101,7 +118,7 @@ pub fn create_local_worker_workflow(router_config: &RouterConfig) -> WorkflowDef
             })
             .with_timeout(Duration::from_secs(10))
             .with_failure_action(FailureAction::ContinueNextStep)
-            .depends_on(&["detect_connection_mode"]),
+            .depends_on(&["detect_runtime"]),
         )
         // Step 2b: Discover DP info (after metadata to avoid concurrent /server_info calls)
         .add_step(

@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use super::{
     grpc::{pd_router::GrpcPDRouter, router::GrpcRouter},
-    http::{pd_router::PDRouter, router::Router},
+    http::{pd_router::PDRouter, router::Router, vllm_pd_router::VllmPDRouter},
     openai::OpenAIRouter,
     RouterTrait,
 };
 use crate::{
     app_context::AppContext,
     config::{PolicyConfig, RoutingMode},
-    core::ConnectionMode,
+    core::{ConnectionMode, RuntimeType},
     policies::PolicyFactory,
 };
 
@@ -46,15 +46,32 @@ impl RouterFactory {
                 RoutingMode::PrefillDecode {
                     prefill_policy,
                     decode_policy,
+                    runtime,
                     ..
                 } => {
-                    Self::create_pd_router(
-                        prefill_policy.as_ref(),
-                        decode_policy.as_ref(),
-                        &ctx.router_config.policy,
-                        ctx,
-                    )
-                    .await
+                    // Select router based on explicit runtime type in config
+                    // In IGW mode, RouterManager creates all routers and selects dynamically
+                    match runtime {
+                        Some(RuntimeType::Vllm) => {
+                            Self::create_vllm_pd_router(
+                                prefill_policy.as_ref(),
+                                decode_policy.as_ref(),
+                                &ctx.router_config.policy,
+                                ctx,
+                            )
+                            .await
+                        }
+                        _ => {
+                            // Default to SGLang PD router for Sglang, External, or None
+                            Self::create_pd_router(
+                                prefill_policy.as_ref(),
+                                decode_policy.as_ref(),
+                                &ctx.router_config.policy,
+                                ctx,
+                            )
+                            .await
+                        }
+                    }
                 }
                 RoutingMode::OpenAI { .. } => Self::create_openai_router(ctx).await,
             },
@@ -70,7 +87,7 @@ impl RouterFactory {
         Ok(Box::new(router))
     }
 
-    /// Create a PD router with injected policy
+    /// Create a PD router with injected policy (for SGLang backends)
     pub async fn create_pd_router(
         prefill_policy_config: Option<&PolicyConfig>,
         decode_policy_config: Option<&PolicyConfig>,
@@ -87,6 +104,27 @@ impl RouterFactory {
 
         let router = PDRouter::new(ctx).await?;
 
+        Ok(Box::new(router))
+    }
+
+    /// Create a vLLM PD router with injected policy (for vLLM backends)
+    pub async fn create_vllm_pd_router(
+        prefill_policy_config: Option<&PolicyConfig>,
+        decode_policy_config: Option<&PolicyConfig>,
+        main_policy_config: &PolicyConfig,
+        ctx: &Arc<AppContext>,
+    ) -> Result<Box<dyn RouterTrait>, String> {
+        let prefill_policy =
+            PolicyFactory::create_from_config(prefill_policy_config.unwrap_or(main_policy_config));
+        let decode_policy =
+            PolicyFactory::create_from_config(decode_policy_config.unwrap_or(main_policy_config));
+
+        ctx.policy_registry.set_prefill_policy(prefill_policy);
+        ctx.policy_registry.set_decode_policy(decode_policy);
+
+        let router = VllmPDRouter::new(ctx).await?;
+
+        tracing::info!("Created vLLM PD router for vLLM disaggregated inference");
         Ok(Box::new(router))
     }
 

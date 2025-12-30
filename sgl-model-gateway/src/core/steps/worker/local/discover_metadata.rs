@@ -220,6 +220,11 @@ async fn fetch_grpc_metadata(
 }
 
 /// Step 2a: Discover metadata from worker.
+///
+/// This step runs after DetectRuntimeStep and uses the detected runtime type
+/// from context to decide which endpoints to call:
+/// - SGLang: /server_info and /model_info for metadata
+/// - vLLM: Skip these endpoints (they're SGLang-specific or require dev mode)
 pub struct DiscoverMetadataStep;
 
 #[async_trait]
@@ -228,56 +233,83 @@ impl StepExecutor for DiscoverMetadataStep {
         let config: Arc<WorkerConfigRequest> = context.get_or_err("worker_config")?;
         let connection_mode: Arc<ConnectionMode> = context.get_or_err("connection_mode")?;
 
+        // Get runtime type from DetectRuntimeStep (set in previous step)
+        let detected_runtime: Option<Arc<String>> = context.get("detected_runtime_type");
+        let runtime_str = detected_runtime
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("sglang");
+
         debug!(
-            "Discovering metadata for {} ({:?})",
-            config.url, *connection_mode
+            "Discovering metadata for {} ({:?}, runtime={})",
+            config.url, *connection_mode, runtime_str
         );
 
-        let (discovered_labels, detected_runtime) = match connection_mode.as_ref() {
+        let discovered_labels = match connection_mode.as_ref() {
             ConnectionMode::Http => {
                 let mut labels = HashMap::new();
 
-                // Fetch from /server_info for server-related metadata
-                if let Ok(server_info) =
-                    get_server_info(&config.url, config.api_key.as_deref()).await
-                {
-                    if let Some(model_path) = server_info.model_path.filter(|s| !s.is_empty()) {
-                        labels.insert("model_path".to_string(), model_path);
-                    }
-                    if let Some(served_model_name) =
-                        server_info.served_model_name.filter(|s| !s.is_empty())
-                    {
-                        labels.insert("served_model_name".to_string(), served_model_name);
-                    }
-                }
+                // Only fetch /server_info and /model_info for SGLang workers
+                // vLLM doesn't have these endpoints (they're SGLang-specific)
+                let is_sglang = runtime_str == "sglang";
 
-                // Fetch from /model_info for model-related metadata
-                if let Ok(model_info) = get_model_info(&config.url, config.api_key.as_deref()).await
-                {
-                    if let Some(model_type) = model_info.model_type.filter(|s| !s.is_empty()) {
-                        labels.insert("model_type".to_string(), model_type);
-                    }
-                    if let Some(architectures) = model_info.architectures.filter(|a| !a.is_empty())
+                if is_sglang {
+                    // Fetch from /server_info for server-related metadata
+                    if let Ok(server_info) =
+                        get_server_info(&config.url, config.api_key.as_deref()).await
                     {
-                        if let Ok(json_str) = serde_json::to_string(&architectures) {
-                            labels.insert("architectures".to_string(), json_str);
+                        if let Some(model_path) = server_info.model_path.filter(|s| !s.is_empty()) {
+                            labels.insert("model_path".to_string(), model_path);
+                        }
+                        if let Some(served_model_name) =
+                            server_info.served_model_name.filter(|s| !s.is_empty())
+                        {
+                            labels.insert("served_model_name".to_string(), served_model_name);
                         }
                     }
+
+                    // Fetch from /model_info for model-related metadata
+                    if let Ok(model_info) =
+                        get_model_info(&config.url, config.api_key.as_deref()).await
+                    {
+                        if let Some(model_type) = model_info.model_type.filter(|s| !s.is_empty()) {
+                            labels.insert("model_type".to_string(), model_type);
+                        }
+                        if let Some(architectures) =
+                            model_info.architectures.filter(|a| !a.is_empty())
+                        {
+                            if let Ok(json_str) = serde_json::to_string(&architectures) {
+                                labels.insert("architectures".to_string(), json_str);
+                            }
+                        }
+                    }
+                } else {
+                    debug!(
+                        "Skipping /server_info and /model_info for non-SGLang worker {}",
+                        config.url
+                    );
                 }
 
-                Ok((labels, None))
+                labels
             }
             ConnectionMode::Grpc { .. } => {
-                let runtime_type = config.runtime.as_deref();
-                fetch_grpc_metadata(&config.url, runtime_type)
-                    .await
-                    .map(|(labels, runtime)| (labels, Some(runtime)))
+                // For gRPC, fetch metadata via gRPC protocol
+                let runtime_type = config.runtime.as_deref().or(Some(runtime_str));
+                match fetch_grpc_metadata(&config.url, runtime_type).await {
+                    Ok((labels, detected_grpc_runtime)) => {
+                        // Update runtime if gRPC detection found a different one
+                        if detected_runtime.is_none() {
+                            context.set("detected_runtime_type", detected_grpc_runtime);
+                        }
+                        labels
+                    }
+                    Err(e) => {
+                        warn!("Failed to fetch gRPC metadata for {}: {}", config.url, e);
+                        HashMap::new()
+                    }
+                }
             }
-        }
-        .unwrap_or_else(|e| {
-            warn!("Failed to fetch metadata for {}: {}", config.url, e);
-            (HashMap::new(), None)
-        });
+        };
 
         debug!(
             "Discovered {} metadata labels for {}",
@@ -286,10 +318,6 @@ impl StepExecutor for DiscoverMetadataStep {
         );
 
         context.set("discovered_labels", discovered_labels);
-        if let Some(runtime) = detected_runtime {
-            debug!("Detected runtime type: {}", runtime);
-            context.set("detected_runtime_type", runtime);
-        }
 
         Ok(StepResult::Success)
     }
