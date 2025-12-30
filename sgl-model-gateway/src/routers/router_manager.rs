@@ -187,11 +187,42 @@ impl RouterManager {
         } else {
             info!("Initializing RouterManager in single-router mode");
 
-            let single_router = Arc::from(RouterFactory::create_router(app_context).await?);
-            let router_id = Self::determine_router_id(
-                &config.router_config.mode,
+            // For PD mode, detect runtime from workers and create appropriate router
+            let (single_router, router_id) = match (
                 &config.router_config.connection_mode,
-            );
+                &config.router_config.mode,
+            ) {
+                (ConnectionMode::Http, RoutingMode::PrefillDecode { prefill_policy, decode_policy, .. }) => {
+                    let runtime = Self::detect_runtime_from_workers(&app_context.worker_registry);
+                    if matches!(runtime, Some(RuntimeType::Vllm)) {
+                        info!("Detected vLLM runtime, creating vLLM PD router");
+                        let router = RouterFactory::create_vllm_pd_router(
+                            prefill_policy.as_ref(),
+                            decode_policy.as_ref(),
+                            &config.router_config.policy,
+                            app_context,
+                        ).await?;
+                        (Arc::from(router), router_ids::HTTP_VLLM_PD)
+                    } else {
+                        info!("Using SGLang PD router (default)");
+                        let router = RouterFactory::create_pd_router(
+                            prefill_policy.as_ref(),
+                            decode_policy.as_ref(),
+                            &config.router_config.policy,
+                            app_context,
+                        ).await?;
+                        (Arc::from(router), router_ids::HTTP_PD)
+                    }
+                }
+                _ => {
+                    let router = RouterFactory::create_router(app_context).await?;
+                    let router_id = Self::determine_router_id(
+                        &config.router_config.mode,
+                        &config.router_config.connection_mode,
+                    );
+                    (Arc::from(router), router_id)
+                }
+            };
 
             info!("Created single router with ID: {}", router_id.as_str());
             manager.register_router(router_id.clone(), single_router);
@@ -217,6 +248,27 @@ impl RouterManager {
             (ConnectionMode::Grpc { .. }, RoutingMode::PrefillDecode { .. }) => router_ids::GRPC_PD,
             (ConnectionMode::Grpc { .. }, RoutingMode::OpenAI { .. }) => router_ids::GRPC_REGULAR,
         }
+    }
+
+    /// Detect runtime type from registered workers
+    /// Returns vLLM if any prefill worker is vLLM, otherwise defaults to SGLang
+    fn detect_runtime_from_workers(worker_registry: &WorkerRegistry) -> Option<RuntimeType> {
+        let prefill_workers = worker_registry.get_prefill_workers();
+
+        // Check if any prefill worker is vLLM
+        for worker in &prefill_workers {
+            if matches!(worker.metadata().runtime_type, RuntimeType::Vllm) {
+                return Some(RuntimeType::Vllm);
+            }
+        }
+
+        // If we have prefill workers but none are vLLM, it's SGLang
+        if !prefill_workers.is_empty() {
+            return Some(RuntimeType::Sglang);
+        }
+
+        // No workers registered yet
+        None
     }
 
     pub fn register_router(&self, id: RouterId, router: Arc<dyn RouterTrait>) {

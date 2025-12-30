@@ -11,7 +11,7 @@ use super::{
 use crate::{
     app_context::AppContext,
     config::{PolicyConfig, RoutingMode},
-    core::{ConnectionMode, RuntimeType},
+    core::ConnectionMode,
     policies::PolicyFactory,
 };
 
@@ -46,32 +46,17 @@ impl RouterFactory {
                 RoutingMode::PrefillDecode {
                     prefill_policy,
                     decode_policy,
-                    runtime,
                     ..
                 } => {
-                    // Select router based on explicit runtime type in config
-                    // In IGW mode, RouterManager creates all routers and selects dynamically
-                    match runtime {
-                        Some(RuntimeType::Vllm) => {
-                            Self::create_vllm_pd_router(
-                                prefill_policy.as_ref(),
-                                decode_policy.as_ref(),
-                                &ctx.router_config.policy,
-                                ctx,
-                            )
-                            .await
-                        }
-                        _ => {
-                            // Default to SGLang PD router for Sglang, External, or None
-                            Self::create_pd_router(
-                                prefill_policy.as_ref(),
-                                decode_policy.as_ref(),
-                                &ctx.router_config.policy,
-                                ctx,
-                            )
-                            .await
-                        }
-                    }
+                    // Default to SGLang PD router
+                    // For vLLM, use create_pd_router_with_runtime explicitly
+                    Self::create_pd_router(
+                        prefill_policy.as_ref(),
+                        decode_policy.as_ref(),
+                        &ctx.router_config.policy,
+                        ctx,
+                    )
+                    .await
                 }
                 RoutingMode::OpenAI { .. } => Self::create_openai_router(ctx).await,
             },

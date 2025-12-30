@@ -3,10 +3,7 @@ use super::{
     HistoryBackend, MetricsConfig, OracleConfig, PolicyConfig, PostgresConfig, RetryConfig,
     RouterConfig, RoutingMode, TokenizerCacheConfig, TraceConfig,
 };
-use crate::{
-    core::{ConnectionMode, RuntimeType},
-    mcp::McpConfig,
-};
+use crate::{core::ConnectionMode, mcp::McpConfig};
 
 /// Builder for RouterConfig that wraps the config itself
 /// This eliminates field duplication and stays in sync automatically
@@ -61,7 +58,6 @@ impl RouterConfigBuilder {
             decode_urls,
             prefill_policy: None,
             decode_policy: None,
-            runtime: None,
         };
         self
     }
@@ -79,36 +75,7 @@ impl RouterConfigBuilder {
             decode_urls,
             prefill_policy,
             decode_policy,
-            runtime: None,
         };
-        self
-    }
-
-    /// With vLLM runtime for PD mode
-    pub fn prefill_decode_mode_vllm(
-        mut self,
-        prefill_urls: Vec<(String, Option<u16>)>,
-        decode_urls: Vec<String>,
-    ) -> Self {
-        self.config.mode = RoutingMode::PrefillDecode {
-            prefill_urls,
-            decode_urls,
-            prefill_policy: None,
-            decode_policy: None,
-            runtime: Some(RuntimeType::Vllm),
-        };
-        self
-    }
-
-    /// Set the runtime type for PD mode (modifies existing PD mode config)
-    pub fn pd_runtime(mut self, rt: RuntimeType) -> Self {
-        if let RoutingMode::PrefillDecode {
-            runtime: ref mut pd_runtime,
-            ..
-        } = self.config.mode
-        {
-            *pd_runtime = Some(rt);
-        }
         self
     }
 

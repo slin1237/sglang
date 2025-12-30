@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::ConfigResult;
-use crate::core::{ConnectionMode, RuntimeType};
+use crate::core::ConnectionMode;
 
 /// Main router configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,11 +260,6 @@ pub enum RoutingMode {
         prefill_policy: Option<PolicyConfig>,
         #[serde(skip_serializing_if = "Option::is_none")]
         decode_policy: Option<PolicyConfig>,
-        /// Runtime type for PD routing (sglang or vllm)
-        /// If not specified, defaults to auto-detection or sglang
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
-        runtime: Option<RuntimeType>,
     },
     #[serde(rename = "openai")]
     OpenAI { worker_urls: Vec<String> },
@@ -309,19 +304,6 @@ impl RoutingMode {
         }
     }
 
-    /// Get the runtime type for PD mode
-    /// Returns None for non-PD modes or if runtime is not specified
-    pub fn get_runtime(&self) -> Option<&RuntimeType> {
-        match self {
-            RoutingMode::PrefillDecode { runtime, .. } => runtime.as_ref(),
-            _ => None,
-        }
-    }
-
-    /// Check if this is vLLM runtime mode
-    pub fn is_vllm_runtime(&self) -> bool {
-        matches!(self.get_runtime(), Some(RuntimeType::Vllm))
-    }
 }
 
 /// Policy configuration for routing
@@ -745,7 +727,6 @@ mod tests {
             decode_urls: vec!["http://decode1".to_string()],
             prefill_policy: None,
             decode_policy: None,
-            runtime: None,
         };
         assert!(pd.is_pd_mode());
     }
@@ -773,7 +754,6 @@ mod tests {
             ],
             prefill_policy: None,
             decode_policy: None,
-            runtime: None,
         };
         assert_eq!(pd.worker_count(), 5);
 
@@ -797,7 +777,6 @@ mod tests {
             decode_urls: vec!["http://decode1".to_string()],
             prefill_policy: None,
             decode_policy: None,
-            runtime: None,
         };
         let json = serde_json::to_string(&pd).unwrap();
         assert!(json.contains("\"type\":\"prefill_decode\""));
@@ -1261,7 +1240,6 @@ mod tests {
             decode_policy: Some(PolicyConfig::PowerOfTwo {
                 load_check_interval_secs: 60,
             }),
-            runtime: None,
         };
 
         let main_policy = PolicyConfig::Random;
@@ -1290,7 +1268,6 @@ mod tests {
                 max_tree_size: 1000,
             }),
             decode_policy: None,
-            runtime: None,
         };
 
         let main_policy = PolicyConfig::RoundRobin;
@@ -1315,7 +1292,6 @@ mod tests {
             decode_policy: Some(PolicyConfig::PowerOfTwo {
                 load_check_interval_secs: 60,
             }),
-            runtime: None,
         };
 
         let main_policy = PolicyConfig::Random;
@@ -1338,7 +1314,6 @@ mod tests {
             decode_urls: vec!["http://decode1".to_string()],
             prefill_policy: None,
             decode_policy: None,
-            runtime: None,
         };
 
         let main_policy = PolicyConfig::CacheAware {

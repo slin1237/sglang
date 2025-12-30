@@ -139,7 +139,6 @@ mod test_pd_routing {
                     ],
                     prefill_policy: None,
                     decode_policy: None,
-                    runtime: None,
                 },
                 PolicyConfig::Random,
             ),
@@ -149,7 +148,6 @@ mod test_pd_routing {
                     decode_urls: vec!["http://decode:8080".to_string()],
                     prefill_policy: None,
                     decode_policy: None,
-                    runtime: None,
                 },
                 PolicyConfig::PowerOfTwo {
                     load_check_interval_secs: 5,
@@ -165,7 +163,6 @@ mod test_pd_routing {
                     decode_urls: vec!["http://d1:8080".to_string(), "http://d2:8080".to_string()],
                     prefill_policy: None,
                     decode_policy: None,
-                    runtime: None,
                 },
                 PolicyConfig::CacheAware {
                     cache_threshold: 0.7,
@@ -185,7 +182,6 @@ mod test_pd_routing {
                     decode_urls: vec!["http://d1:8080".to_string(), "http://d2:8080".to_string()],
                     prefill_policy: None,
                     decode_policy: None,
-                    runtime: None,
                 },
                 PolicyConfig::Bucket {
                     balance_abs_threshold: 20,

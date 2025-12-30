@@ -802,7 +802,6 @@ impl CliArgs {
                 decode_urls: self.decode.clone(),
                 prefill_policy: self.prefill_policy.as_ref().map(|p| self.parse_policy(p)),
                 decode_policy: self.decode_policy.as_ref().map(|p| self.parse_policy(p)),
-                runtime: None, // Auto-detect from worker metrics
             }
         } else {
             RoutingMode::Regular {
