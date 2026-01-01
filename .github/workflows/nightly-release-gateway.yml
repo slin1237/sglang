@@ -9,6 +9,65 @@ on:
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
+  cleanup-old-releases:
+    name: Cleanup Old TestPyPI Releases
+    if: github.repository == 'sgl-project/sglang'
+    runs-on: ubuntu-latest
+    # Continue even if cleanup fails - don't block the build
+    continue-on-error: true
+    steps:
+      - name: Install dependencies
+        run: pip install requests packaging
+
+      - name: List and report old nightly releases
+        id: list-old
+        run: |
+          python << 'EOF'
+          import requests
+          import os
+          from datetime import datetime, timedelta
+          import re
+          import json
+
+          PACKAGE_NAME = "sgl-model-gateway"
+          KEEP_DAYS = 7
+
+          # Get all versions from TestPyPI
+          response = requests.get(f"https://test.pypi.org/pypi/{PACKAGE_NAME}/json")
+          if response.status_code == 404:
+              print(f"Package {PACKAGE_NAME} not found on TestPyPI")
+              exit(0)
+
+          data = response.json()
+          all_versions = list(data.get("releases", {}).keys())
+          print(f"Found {len(all_versions)} total versions on TestPyPI")
+
+          # Filter for dev versions (nightly releases)
+          dev_pattern = re.compile(r"\.dev(\d{8})$")
+          cutoff_date = datetime.now() - timedelta(days=KEEP_DAYS)
+          cutoff_str = cutoff_date.strftime("%Y%m%d")
+
+          old_versions = []
+          for version in all_versions:
+              match = dev_pattern.search(version)
+              if match:
+                  date_str = match.group(1)
+                  if date_str < cutoff_str:
+                      old_versions.append(version)
+
+          print(f"\nOld nightly versions (older than {KEEP_DAYS} days): {len(old_versions)}")
+          for v in sorted(old_versions):
+              print(f"  - {v}")
+
+          if old_versions:
+              print(f"\n⚠️  ACTION REQUIRED: {len(old_versions)} old releases should be deleted manually via TestPyPI web UI")
+              print(f"   Visit: https://test.pypi.org/manage/project/{PACKAGE_NAME}/releases/")
+
+          # Calculate total size estimate
+          total_files = sum(len(data["releases"].get(v, [])) for v in old_versions)
+          print(f"\nTotal files in old releases: {total_files}")
+          EOF
+
   build:
     name: build on ${{ matrix.platform || matrix.os }} (${{ matrix.target }} - ${{ matrix.manylinux || 'auto' }})
     runs-on: ${{ matrix.os }}-latest
@@ -179,13 +238,37 @@ jobs:
   upload:
     name: Upload to TestPyPI
     if: github.repository == 'sgl-project/sglang'  # Ensure this job only runs for the sgl-project/sglang repository
-    needs: [build, build-sdist]
+    needs: [build, build-sdist, cleanup-old-releases]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+
+      - name: Check release count before upload
+        run: |
+          pip install requests
+          python << 'EOF'
+          import requests
+          import sys
+
+          PACKAGE_NAME = "sgl-model-gateway"
+          MAX_RELEASES_WARNING = 50
+
+          response = requests.get(f"https://test.pypi.org/pypi/{PACKAGE_NAME}/json")
+          if response.status_code == 404:
+              print(f"Package {PACKAGE_NAME} not found - this will be the first release")
+              sys.exit(0)
+
+          data = response.json()
+          release_count = len(data.get("releases", {}))
+          print(f"Current release count on TestPyPI: {release_count}")
+
+          if release_count >= MAX_RELEASES_WARNING:
+              print(f"⚠️  WARNING: {release_count} releases exist. Consider cleaning up old releases.")
+              print(f"   Visit: https://test.pypi.org/manage/project/{PACKAGE_NAME}/releases/")
+          EOF
 
       - name: Upload to TestPyPI
         env:
