@@ -30,19 +30,32 @@ static STRING_INTERNER: Lazy<DashMap<String, Arc<str>>> = Lazy::new(DashMap::new
 /// Intern a string, returning a cheaply-cloneable Arc<str>.
 ///
 /// This function is designed for high-throughput scenarios where the same
-/// strings (model IDs, worker URLs) appear repeatedly. The first call allocates,
+/// strings (model IDs, worker URLs) appear repeatedly.
+///
+/// # Performance
+/// - Fast path (cache hit): Single DashMap lookup, no allocation
+/// - Slow path (cache miss): One String allocation + one Arc allocation
+///
+/// The implementation avoids the TOCTOU race by using the entry API directly
+/// on cache miss, and avoids unnecessary allocation on cache hit.
+#[inline]
 pub fn intern_string(s: &str) -> Arc<str> {
-    // Fast path: check if already interned
+    // Fast path: check if already interned (no allocation)
     if let Some(entry) = STRING_INTERNER.get(s) {
         return Arc::clone(entry.value());
     }
 
-    // Slow path: intern the string
-    // Use entry API to avoid TOCTOU race
-    STRING_INTERNER
-        .entry(s.to_string())
-        .or_insert_with(|| Arc::from(s))
-        .clone()
+    // Slow path: intern the string using entry API to handle races correctly
+    // Only allocates the String key if we actually need to insert
+    use dashmap::mapref::entry::Entry;
+    match STRING_INTERNER.entry(s.to_string()) {
+        Entry::Occupied(e) => Arc::clone(e.get()),
+        Entry::Vacant(e) => {
+            let arc: Arc<str> = Arc::from(s);
+            e.insert(Arc::clone(&arc));
+            arc
+        }
+    }
 }
 
 pub fn interner_size() -> usize {

@@ -56,15 +56,17 @@ impl InFlightRequestTracker {
         self.requests.is_empty()
     }
 
+    /// Compute cumulative bucket counts for request age distribution.
+    ///
+    /// Processes entries directly during iteration to avoid intermediate allocation.
     pub fn compute_bucket_counts(&self) -> [usize; AGE_BUCKET_LABELS.len()] {
         let now = Instant::now();
         let inf_idx = AGE_BUCKET_LABELS.len() - 1;
 
-        let instants: Vec<Instant> = self.requests.iter().map(|entry| *entry.value()).collect();
-
+        // Process directly during iteration - no Vec allocation
         let mut non_cumulative_counts = [0usize; AGE_BUCKET_LABELS.len()];
-        for inst in instants {
-            let age_secs = now.duration_since(inst).as_secs();
+        for entry in self.requests.iter() {
+            let age_secs = now.duration_since(*entry.value()).as_secs();
             let bucket_idx = AGE_BUCKET_BOUNDS
                 .iter()
                 .position(|&bound| age_secs <= bound)
@@ -72,6 +74,7 @@ impl InFlightRequestTracker {
             non_cumulative_counts[bucket_idx] += 1;
         }
 
+        // Convert to cumulative counts
         let mut counts = [0usize; AGE_BUCKET_LABELS.len()];
         let mut cumulative = 0;
         for i in 0..counts.len() {

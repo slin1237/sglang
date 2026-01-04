@@ -17,7 +17,7 @@ use axum::{
 };
 use bytes::Bytes;
 use http_body::Frame;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, oneshot};
 use tower::{Layer, Service};
@@ -69,23 +69,12 @@ impl TokenGuardBody {
 impl Drop for TokenGuardBody {
     fn drop(&mut self) {
         if let Some(bucket) = self.token_bucket.take() {
-            let tokens = self.tokens;
             debug!(
                 "TokenGuardBody: stream ended, returning {} tokens to bucket",
-                tokens
+                self.tokens
             );
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    bucket.return_tokens(tokens).await;
-                });
-            } else {
-                // Runtime not available (e.g., during shutdown)
-                // Tokens will be lost, but this is acceptable during shutdown
-                warn!(
-                    "TokenGuardBody: Cannot return {} tokens - no Tokio runtime available",
-                    tokens
-                );
-            }
+            // Use lock-free sync return - no runtime needed, guaranteed token return
+            bucket.return_tokens_sync(self.tokens);
         }
     }
 }
@@ -159,7 +148,20 @@ pub async fn auth_middleware(
 /// Alphanumeric characters for request ID generation (as bytes for O(1) indexing)
 const REQUEST_ID_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-/// Generate OpenAI-compatible request ID based on endpoint
+thread_local! {
+    /// Thread-local fast RNG for request ID generation.
+    /// SmallRng is significantly faster than the default ThreadRng.
+    static FAST_RNG: std::cell::RefCell<rand::rngs::SmallRng> =
+        std::cell::RefCell::new(rand::rngs::SmallRng::from_os_rng());
+}
+
+/// Generate OpenAI-compatible request ID based on endpoint.
+///
+/// # Performance
+/// - Uses thread-local SmallRng (faster than ThreadRng)
+/// - Pre-allocates string with exact capacity (max prefix 9 + 24 random = 33 chars)
+/// - Uses byte indexing for O(1) character lookup
+#[inline]
 fn generate_request_id(path: &str) -> String {
     let prefix = if path.contains("/chat/completions") {
         "chatcmpl-"
@@ -173,17 +175,20 @@ fn generate_request_id(path: &str) -> String {
         "req-"
     };
 
-    // Generate a random string similar to OpenAI's format
-    // Use byte array indexing (O(1)) instead of chars().nth() (O(n))
-    let mut rng = rand::rng();
-    let random_part: String = (0..24)
-        .map(|_| {
-            let idx = rng.random_range(0..REQUEST_ID_CHARS.len());
-            REQUEST_ID_CHARS[idx] as char
-        })
-        .collect();
+    // Pre-allocate with exact capacity: max prefix (9) + random part (24)
+    let mut result = String::with_capacity(33);
+    result.push_str(prefix);
 
-    format!("{}{}", prefix, random_part)
+    // Generate random part using thread-local fast RNG
+    FAST_RNG.with(|rng| {
+        let mut rng = rng.borrow_mut();
+        for _ in 0..24 {
+            let idx = rng.random_range(0..REQUEST_ID_CHARS.len());
+            result.push(REQUEST_ID_CHARS[idx] as char);
+        }
+    });
+
+    result
 }
 
 /// Extension type for storing request ID
